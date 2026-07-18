@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from omm import benchmark, linker, predictor, registry, rules as rules_mod, telemetry
+from omm import benchmark, linker, predictor, registry, rules as rules_mod, search as search_mod, telemetry
 from omm.config import MODELS_DIR, load_config
 from omm.downloader import DownloadError, download_file
 from omm.hardware import scan_hardware
@@ -253,6 +253,35 @@ def list_models() -> None:
             "[green]yes[/green]" if linked.get("ollama") else "no",
         )
     console.print(table)
+
+
+@app.command()
+def search(query: str) -> None:
+    """Search curated models, cached candidates, and HuggingFace by name."""
+    config = load_config()
+    pool = search_mod.local_candidate_pool(config.get("model_url"))
+    local_matches = search_mod.match_candidates(pool, query)
+
+    local_repo_ids = {c.get("repo_id") for c in local_matches if c.get("repo_id")}
+    hf_matches = [
+        c
+        for c in search_mod.search_huggingface(query)
+        if c.get("repo_id") not in local_repo_ids
+    ]
+
+    combined = local_matches + hf_matches
+    if not combined:
+        console.print(f"[yellow]No models found matching '{query}'.[/yellow]")
+        raise typer.Exit(1)
+
+    groups = search_mod.group_by_family(combined)
+    for family in sorted(groups):
+        console.print(f"[bold cyan]==> {family}[/bold cyan]")
+        for c in groups[family]:
+            label = c.get("name") or c.get("repo_id")
+            desc = c.get("description") or ""
+            console.print(f"  {label}  [dim]{desc}[/dim]")
+        console.print()
 
 
 def _report_telemetry(filename: str, repo_id: str | None, tokens_per_sec: float | None) -> None:
