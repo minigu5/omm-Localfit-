@@ -98,11 +98,12 @@ def recommend() -> None:
 def install(model_name: str) -> None:
     """Download a model into the central hub and link it into installed engines."""
     try:
-        url, filename = resolve_model(model_name)
+        resolved = resolve_model(model_name)
     except ModelResolutionError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from e
 
+    url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
     dest = MODELS_DIR / filename
     if dest.exists():
         console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
@@ -122,7 +123,7 @@ def install(model_name: str) -> None:
 
     if linker.is_lmstudio_installed():
         try:
-            linker.link_lmstudio(dest)
+            linker.link_lmstudio(dest, repo_id)
             linked["lmstudio"] = True
         except linker.LinkError as e:
             console.print(f"[yellow]LM Studio link skipped: {e}[/yellow]")
@@ -150,6 +151,7 @@ def install(model_name: str) -> None:
         size_bytes=dest.stat().st_size,
         installed_at=datetime.now(timezone.utc).isoformat(),
         ollama_name=ollama_tag,
+        repo_id=repo_id,
         linked=linked,
     )
 
@@ -173,7 +175,7 @@ def remove(filename: str) -> None:
 
     linked = entry.get("linked", {})
     if linked.get("lmstudio"):
-        linker.unlink_lmstudio(filename)
+        linker.unlink_lmstudio(filename, entry.get("repo_id"))
     if linked.get("ollama"):
         linker.unlink_ollama(entry.get("ollama_name", linker.sanitize_ollama_tag(filename)))
 

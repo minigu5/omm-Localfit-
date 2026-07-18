@@ -8,6 +8,8 @@ Accepts three forms for `omm install <model_name>`:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import requests
 
 HF_API = "https://huggingface.co/api/models/{repo_id}"
@@ -35,6 +37,13 @@ class ModelResolutionError(Exception):
     pass
 
 
+@dataclass
+class ResolvedModel:
+    url: str
+    filename: str
+    repo_id: str | None  # None when installed from a direct URL (no HF repo)
+
+
 def _list_gguf_files(repo_id: str) -> list[str]:
     resp = requests.get(HF_API.format(repo_id=repo_id), timeout=15)
     resp.raise_for_status()
@@ -42,15 +51,15 @@ def _list_gguf_files(repo_id: str) -> list[str]:
     return [s["rfilename"] for s in siblings if s["rfilename"].endswith(".gguf")]
 
 
-def resolve_model(model_name: str) -> tuple[str, str]:
-    """Return (download_url, filename)."""
+def resolve_model(model_name: str) -> ResolvedModel:
     if model_name in CURATED_INDEX:
         repo_id, filename = CURATED_INDEX[model_name]
-        return HF_DOWNLOAD.format(repo_id=repo_id, filename=filename), filename
+        url = HF_DOWNLOAD.format(repo_id=repo_id, filename=filename)
+        return ResolvedModel(url=url, filename=filename, repo_id=repo_id)
 
     if model_name.startswith("http://") or model_name.startswith("https://"):
         filename = model_name.rsplit("/", 1)[-1].split("?", 1)[0]
-        return model_name, filename
+        return ResolvedModel(url=model_name, filename=filename, repo_id=None)
 
     if "/" in model_name:
         if ":" in model_name:
@@ -66,7 +75,8 @@ def resolve_model(model_name: str) -> tuple[str, str]:
                     f"{repo_id}:<filename>\nOptions: {', '.join(candidates)}"
                 )
             filename = candidates[0]
-        return HF_DOWNLOAD.format(repo_id=repo_id, filename=filename), filename
+        url = HF_DOWNLOAD.format(repo_id=repo_id, filename=filename)
+        return ResolvedModel(url=url, filename=filename, repo_id=repo_id)
 
     raise ModelResolutionError(
         f"Unknown model '{model_name}'. Use a curated name "

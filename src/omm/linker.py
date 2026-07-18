@@ -54,18 +54,37 @@ def _symlink(src: Path, dst: Path) -> None:
 
 
 # --- LM Studio -------------------------------------------------------------
+#
+# LM Studio only recognizes models laid out as models/<publisher>/<repo>/
+# <file>.gguf (mirrors the HuggingFace repo layout) - a flat models/<file>.gguf
+# is silently ignored by its scanner. Confirmed against a real LM Studio 0.4.19
+# install via its bundled `lms ls` CLI.
 
 
-def link_lmstudio(gguf_path: Path) -> Path:
-    dst = LMSTUDIO_MODELS_DIR / gguf_path.name
+def _lmstudio_publisher_repo(repo_id: str | None, filename: str) -> tuple[str, str]:
+    if repo_id and "/" in repo_id:
+        publisher, repo = repo_id.split("/", 1)
+        return publisher, repo
+    return "local", Path(filename).stem
+
+
+def link_lmstudio(gguf_path: Path, repo_id: str | None) -> Path:
+    publisher, repo = _lmstudio_publisher_repo(repo_id, gguf_path.name)
+    dst = LMSTUDIO_MODELS_DIR / publisher / repo / gguf_path.name
     _symlink(gguf_path, dst)
     return dst
 
 
-def unlink_lmstudio(filename: str) -> None:
-    dst = LMSTUDIO_MODELS_DIR / filename
+def unlink_lmstudio(filename: str, repo_id: str | None) -> None:
+    publisher, repo = _lmstudio_publisher_repo(repo_id, filename)
+    dst = LMSTUDIO_MODELS_DIR / publisher / repo / filename
     if dst.is_symlink():
         dst.unlink()
+        for parent in (dst.parent, dst.parent.parent):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
 
 
 # --- Ollama ------------------------------------------------------------
