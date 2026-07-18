@@ -1,9 +1,10 @@
 """Zero-duplication linker: symlink central .gguf files into LM Studio and
 Ollama without copying bytes.
 
-Ollama's on-disk manifest format is not officially documented; the shape
-used here (schemaVersion 2, OCI-style config+layers) is reverse-engineered
-from Ollama's blob/manifest store and may need updates if Ollama changes it.
+Ollama's on-disk manifest format is not officially documented. The shape
+used here (schemaVersion 2, OCI-style config+layers) was captured by
+running `ollama create` on a bare GGUF file and inspecting the resulting
+manifest/config/blobs directly, and may need updates if Ollama changes it.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 import re
 from pathlib import Path
 
+from omm.gguf import read_gguf_metadata
 from omm.hashutil import sha256_file
 
 LMSTUDIO_MODELS_DIR = Path.home() / ".cache" / "lm-studio" / "models"
@@ -88,9 +90,17 @@ def _guess_quant(filename: str) -> str:
     return m.group(1).upper() if m else "unknown"
 
 
-def link_ollama(gguf_path: Path, model_name: str) -> None:
+def link_ollama(gguf_path: Path, model_name: str) -> bool:
+    """Link into Ollama. Returns True if the source GGUF has an embedded
+    chat template (Ollama reads it from the model blob at runtime), False
+    if none was found and the caller should warn the user about it.
+    """
     model_sha256 = sha256_file(gguf_path)
     model_digest = f"sha256:{model_sha256}"
+
+    gguf_meta = read_gguf_metadata(gguf_path, {"general.architecture", "tokenizer.chat_template"})
+    architecture = gguf_meta.get("general.architecture", "unknown")
+    has_chat_template = "tokenizer.chat_template" in gguf_meta
 
     blobs_dir = ollama_models_dir() / "blobs"
     blobs_dir.mkdir(parents=True, exist_ok=True)
@@ -98,11 +108,21 @@ def link_ollama(gguf_path: Path, model_name: str) -> None:
     model_blob = blobs_dir / f"sha256-{model_sha256}"
     _symlink(gguf_path, model_blob)
 
+    # Mirrors the config produced by `ollama create` for a bare GGUF (no
+    # Modelfile TEMPLATE override): a single model layer, config mediaType
+    # "application/vnd.docker.container.image.v1+json", and model_family
+    # taken from the GGUF's own general.architecture field. With this shape,
+    # Ollama reads tokenizer.chat_template straight from the GGUF at
+    # inference time - no separate template layer is needed or created by
+    # `ollama create` itself in this case.
     config = {
         "model_format": "gguf",
-        "model_family": "unknown",
+        "model_family": architecture,
+        "model_families": [architecture],
         "model_type": _guess_param_size(gguf_path.name),
         "file_type": _guess_quant(gguf_path.name),
+        "architecture": "amd64",
+        "os": "linux",
         "rootfs": {"type": "layers", "diff_ids": [model_digest]},
     }
     config_bytes = json.dumps(config).encode()
@@ -114,7 +134,7 @@ def link_ollama(gguf_path: Path, model_name: str) -> None:
         "schemaVersion": 2,
         "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
         "config": {
-            "mediaType": "application/vnd.ollama.image.config",
+            "mediaType": "application/vnd.docker.container.image.v1+json",
             "digest": f"sha256:{config_sha256}",
             "size": len(config_bytes),
         },
@@ -132,6 +152,8 @@ def link_ollama(gguf_path: Path, model_name: str) -> None:
     )
     manifest_dir.mkdir(parents=True, exist_ok=True)
     (manifest_dir / "latest").write_text(json.dumps(manifest, indent=2))
+
+    return has_chat_template
 
 
 def unlink_ollama(model_name: str) -> None:

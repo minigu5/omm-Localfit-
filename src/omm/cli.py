@@ -131,8 +131,13 @@ def install(model_name: str) -> None:
 
     if linker.is_ollama_installed():
         try:
-            linker.link_ollama(dest, ollama_tag)
+            has_chat_template = linker.link_ollama(dest, ollama_tag)
             linked["ollama"] = True
+            if not has_chat_template:
+                console.print(
+                    "[yellow]This GGUF has no embedded chat template - "
+                    "Ollama will fall back to raw completion (no chat formatting).[/yellow]"
+                )
         except linker.LinkError as e:
             console.print(f"[yellow]Ollama link skipped: {e}[/yellow]")
     else:
