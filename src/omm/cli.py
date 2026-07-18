@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from omm import linker, registry, rules as rules_mod, telemetry
+from omm import benchmark, linker, predictor, registry, rules as rules_mod, telemetry
 from omm.config import MODELS_DIR, load_config
 from omm.downloader import DownloadError, download_file
 from omm.hardware import scan_hardware
@@ -52,26 +52,62 @@ def scan() -> None:
 
 @app.command()
 def update() -> None:
-    """Fetch the latest recommendation rules.json from the configured URL."""
+    """Fetch the latest recommendation rules and trained model index."""
     config = load_config()
-    url = config.get("rules_url")
-    if not url:
-        console.print(
-            "[yellow]No rules_url configured in ~/.omm/config.json - using bundled defaults.[/yellow]"
-        )
-        raise typer.Exit(0)
-    try:
-        fetched = rules_mod.fetch_rules(url)
-    except requests.RequestException as e:
-        console.print(f"[red]Failed to fetch rules from {url}: {e}[/red]")
-        raise typer.Exit(1) from e
-    console.print(f"[green]Updated rules.json ({len(fetched)} entries) from {url}[/green]")
+
+    rules_url = config.get("rules_url")
+    if rules_url:
+        try:
+            fetched = rules_mod.fetch_rules(rules_url)
+            console.print(f"[green]Updated rules.json ({len(fetched)} entries) from {rules_url}[/green]")
+        except requests.RequestException as e:
+            console.print(f"[red]Failed to fetch rules from {rules_url}: {e}[/red]")
+    else:
+        console.print("[dim]No rules_url configured - using bundled defaults.[/dim]")
+
+    model_url = config.get("model_url")
+    if model_url:
+        try:
+            artifact = predictor.fetch_and_cache_model(model_url)
+            console.print(
+                f"[green]Updated recommend-model.json "
+                f"({len(artifact.get('candidates', []))} candidates) from {model_url}[/green]"
+            )
+        except (requests.RequestException, ValueError) as e:
+            console.print(f"[red]Failed to fetch trained model from {model_url}: {e}[/red]")
 
 
 @app.command()
 def recommend() -> None:
-    """Scan hardware and suggest a model to install."""
+    """Scan hardware and suggest a model to install, ranked by a model
+    trained on real install telemetry (falls back to static rules if the
+    trained model can't be fetched)."""
     info = scan_hardware()
+    config = load_config()
+
+    artifact = predictor.load_model(config.get("model_url"))
+    if artifact and artifact.get("candidates"):
+        ranked = predictor.rank_candidates(artifact, info)
+        viable = [(c, speed) for c, speed in ranked if speed > 0][:10]
+        if not viable:
+            console.print("[red]No model is predicted to run on this hardware.[/red]")
+            raise typer.Exit(1)
+
+        choices = [
+            questionary.Choice(
+                title=f"{c['name']} (~{speed:.0f} tok/s predicted) - {c.get('description', '')}",
+                value=f"{c['repo_id']}:{c['filename']}",
+            )
+            for c, speed in viable
+        ]
+        selected = questionary.select("Pick a model to install:", choices=choices).ask()
+        if selected is None:
+            console.print("[yellow]Cancelled.[/yellow]")
+            raise typer.Exit(0)
+        install(selected)
+        return
+
+    console.print("[dim]No trained model available, falling back to static rules.[/dim]")
     has_gpu = info.vram_total_gb is not None
     available_gb = info.vram_total_gb if has_gpu else info.ram_total_gb
 
@@ -112,7 +148,6 @@ def install(model_name: str) -> None:
             download_file(url, dest)
         except DownloadError as e:
             console.print(f"[red]{e}[/red]")
-            _report_telemetry(filename, success=False)
             raise typer.Exit(1) from e
 
     console.print("Verifying checksum...")
@@ -155,7 +190,10 @@ def install(model_name: str) -> None:
         linked=linked,
     )
 
-    _report_telemetry(filename, success=True)
+    if linked["ollama"]:
+        console.print("Benchmarking...")
+        tokens_per_sec = benchmark.benchmark_ollama(ollama_tag)
+        _report_telemetry(filename, repo_id, tokens_per_sec)
 
     console.print(f"[green]Installed {filename}[/green]")
     if linked["ollama"]:
@@ -213,15 +251,22 @@ def list_models() -> None:
     console.print(table)
 
 
-def _report_telemetry(filename: str, success: bool) -> None:
+def _report_telemetry(filename: str, repo_id: str | None, tokens_per_sec: float | None) -> None:
+    if tokens_per_sec is None:
+        # Ollama daemon wasn't reachable - not a real "it doesn't run" signal,
+        # so skip rather than polluting the speed-regression training data.
+        return
     info = scan_hardware()
     telemetry.send_event(
         {
             "os": info.os_name,
             "ram_gb": round(info.ram_total_gb, 1),
             "vram_gb": round(info.vram_total_gb, 1) if info.vram_total_gb is not None else None,
+            "unified_memory": info.unified_memory,
             "model_installed": filename,
-            "success": success,
+            "model_repo_id": repo_id,
+            "engine": "ollama",
+            "tokens_per_sec": round(tokens_per_sec, 2),
         }
     )
 
