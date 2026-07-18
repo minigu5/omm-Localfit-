@@ -16,8 +16,14 @@ dependencies = [
     "questionary>=2.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 omm = "omm.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/omm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
