@@ -368,6 +368,26 @@ def apply() -> None:
     )
 
 
+@app.command()
+def autoremove() -> None:
+    """Remove broken symlinks left behind when a model's source .gguf was
+    deleted without going through `omm remove`."""
+    lmstudio_removed = linker.autoremove_lmstudio() if linker.is_lmstudio_installed() else 0
+    ollama_blobs_removed, ollama_manifests_removed = (
+        linker.autoremove_ollama() if linker.is_ollama_installed() else (0, 0)
+    )
+
+    if lmstudio_removed == 0 and ollama_blobs_removed == 0:
+        console.print("[green]No broken symlinks found.[/green]")
+        return
+
+    console.print(
+        f"[green]Removed {lmstudio_removed} broken LM Studio symlink(s) and "
+        f"{ollama_blobs_removed} broken Ollama blob(s) "
+        f"({ollama_manifests_removed} manifest(s) cleaned up).[/green]"
+    )
+
+
 def _report_telemetry(filename: str, repo_id: str | None, tokens_per_sec: float | None) -> None:
     if tokens_per_sec is None:
         # Ollama daemon wasn't reachable - not a real "it doesn't run" signal,
