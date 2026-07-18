@@ -1,0 +1,58 @@
+"""Hardware-based model recommendation rules.
+
+Ships with a small bundled default so `omm recommend` works offline. `omm
+update` can overwrite ~/.omm/rules.json with a hosted index later.
+"""
+
+from __future__ import annotations
+
+import json
+
+import requests
+
+from omm.config import RULES_PATH
+
+DEFAULT_RULES: list[dict] = [
+    {
+        "name": "tinyllama-1.1b-q4",
+        "min_ram_gb": 2,
+        "min_vram_gb": 0,
+        "description": "Tiny 1.1B model, runs on almost any machine (CPU only).",
+    },
+    {
+        "name": "mistral-7b-instruct-q4",
+        "min_ram_gb": 8,
+        "min_vram_gb": 6,
+        "description": "Solid general-purpose 7B assistant, Q4_K_M.",
+    },
+    {
+        "name": "llama3.1-8b-instruct-q4",
+        "min_ram_gb": 10,
+        "min_vram_gb": 8,
+        "description": "Meta Llama 3.1 8B Instruct, Q4_K_M.",
+    },
+]
+
+
+def load_rules() -> list[dict]:
+    if RULES_PATH.exists():
+        return json.loads(RULES_PATH.read_text())
+    return DEFAULT_RULES
+
+
+def fetch_rules(url: str) -> list[dict]:
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    rules = resp.json()
+    RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RULES_PATH.write_text(json.dumps(rules, indent=2))
+    return rules
+
+
+def matching_rules(rules: list[dict], available_gb: float, has_gpu: bool) -> list[dict]:
+    matches = []
+    for rule in rules:
+        needed = rule["min_vram_gb"] if has_gpu else rule["min_ram_gb"]
+        if available_gb >= needed:
+            matches.append(rule)
+    return sorted(matches, key=lambda r: r["min_ram_gb"], reverse=True)
