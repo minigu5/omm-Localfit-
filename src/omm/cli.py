@@ -1,5 +1,6 @@
 """omm CLI entry point (apt/brew-style command routing)."""
 
+import platform
 import subprocess
 from datetime import datetime, timezone
 
@@ -26,6 +27,15 @@ app = typer.Typer(
 console = Console()
 
 REPO_URL = "git+https://github.com/minigu5/Localfit.git"
+
+
+def _install_spec() -> str:
+    """NVIDIA VRAM detection is dead weight on Mac (no NVIDIA GPUs since
+    2016) - only pull that extra in on other platforms, mirroring
+    install.sh."""
+    if platform.system() == "Darwin":
+        return REPO_URL
+    return f"omm[nvidia] @ {REPO_URL}"
 
 
 @app.command()
@@ -88,7 +98,7 @@ def upgrade() -> None:
     console.print(f"Upgrading omm from {REPO_URL} ...")
     try:
         result = subprocess.run(
-            ["pipx", "install", "--force", REPO_URL],
+            ["pipx", "install", "--force", _install_spec()],
             capture_output=True,
             text=True,
         )

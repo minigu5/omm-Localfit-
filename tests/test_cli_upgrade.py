@@ -7,7 +7,20 @@ from omm import cli
 runner = CliRunner()
 
 
+def test_install_spec_uses_bare_repo_url_on_darwin(monkeypatch):
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+
+    assert cli._install_spec() == cli.REPO_URL
+
+
+def test_install_spec_adds_nvidia_extra_on_non_darwin(monkeypatch):
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
+
+    assert cli._install_spec() == f"omm[nvidia] @ {cli.REPO_URL}"
+
+
 def test_upgrade_reinstalls_via_pipx_then_refreshes_data(monkeypatch):
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
     calls = []
     monkeypatch.setattr(
         cli.subprocess,
