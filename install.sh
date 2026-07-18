@@ -41,6 +41,19 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
+# INSTALL_SPEC points pip at a git+https URL, so pip needs the actual `git`
+# binary to clone it - bare Debian/Ubuntu images (and Docker's official
+# `python` images) don't ship it by default.
+if ! command -v git >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    echo "git not found, installing it via apt..."
+    run_apt update -qq && run_apt install -y --no-install-recommends git ca-certificates || true
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "git not found. Install git first (needed to fetch omm from GitHub)." >&2
+    exit 1
+fi
+
 PY_OK=$(python3 -c 'import sys; print(1 if sys.version_info >= (3, 10) else 0)')
 if [ "$PY_OK" != "1" ]; then
     echo "omm requires Python 3.10+, found: $(python3 --version)" >&2
