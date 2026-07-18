@@ -36,4 +36,9 @@ jobs:
           git add published/recommend-model.json published/candidates.json
           git diff --cached --quiet && echo "No changes, skipping commit." && exit 0
           git commit -m "chore: retrain recommendation model [skip ci]"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "push rejected (attempt $i), rebasing onto origin/main and retrying..."
+            git pull --rebase origin main
+          done
           git push
