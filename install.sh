@@ -114,7 +114,18 @@ if [ -f "$BASHRC" ] && ! grep -qF "$LOCAL_BIN" "$BASHRC" 2>/dev/null; then
     printf '\nexport PATH="%s:$PATH"\n' "$LOCAL_BIN" >> "$BASHRC"
 fi
 
+# zsh's default Tab completion just lists matches - it needs
+# `menu select` explicitly enabled to let Tab cycle through a grid of
+# candidates and Enter pick one, which is what most people expect from
+# "Tab completion". Add it once if the user has a ~/.zshrc and doesn't
+# already set it.
+ZSHRC="$HOME/.zshrc"
+if [ -f "$ZSHRC" ] && ! grep -qF "completion:*' menu select" "$ZSHRC" 2>/dev/null; then
+    printf "\n# omm: enable interactive Tab-completion menu (zsh)\nzstyle ':completion:*' menu select\n" >> "$ZSHRC"
+fi
+
 echo
 echo "Done. If 'omm' isn't found, open a new shell (pipx just updated your PATH)."
 echo "Try:  omm scan"
 echo "Tip: run 'omm --install-completion' once (then restart your shell) to enable Tab completion for install/remove."
+echo "     (zsh users: a menu-select zstyle was added to ~/.zshrc so Tab cycles through matches instead of just listing them.)"
