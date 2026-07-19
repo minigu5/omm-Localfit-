@@ -845,6 +845,14 @@ def test_autoremove_leaves_registered_files_alone(isolated_omm_home, monkeypatch
 Run: `pytest tests/test_cli_autoremove.py -v`
 Expected: FAIL — 첫 테스트에서 "No broken symlinks found" 출력, 파일들이 지워지지 않음.
 
+기존 3개 테스트(`test_autoremove_reports_zero_when_nothing_broken`,
+`test_autoremove_reports_counts_from_both_engines`,
+`test_autoremove_skips_uninstalled_engines`)는 지금까지 `isolated_omm_home`
+fixture 없이 돌아갔다 — `autoremove()`가 `MODELS_DIR`를 건드리지 않았기
+때문이다. 이제 `_autoremove_incomplete_installs()`가 `MODELS_DIR`를 스캔하므로
+이 3개 테스트에도 `isolated_omm_home` 인자를 추가해야 실제 `~/.omm`을 건드리지
+않는다.
+
 - [ ] **Step 3: 구현**
 
 `src/omm/cli.py`의 `autoremove()` (line 445-462)를 다음으로 교체:

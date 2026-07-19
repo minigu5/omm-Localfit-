@@ -492,23 +492,45 @@ def apply() -> None:
     )
 
 
+def _autoremove_incomplete_installs() -> int:
+    if not MODELS_DIR.exists():
+        return 0
+
+    reg = registry.load_registry()
+    removed = 0
+    for path in MODELS_DIR.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix == ".part":
+            if path.with_suffix("").name not in reg:
+                path.unlink()
+                removed += 1
+        elif path.suffix == ".gguf" and path.name not in reg:
+            path.unlink()
+            removed += 1
+    return removed
+
+
 @app.command()
 def autoremove() -> None:
     """Remove broken symlinks left behind when a model's source .gguf was
-    deleted without going through `omm remove`."""
+    deleted without going through `omm remove`, plus any orphaned partial or
+    unregistered downloads in the models directory."""
     lmstudio_removed = linker.autoremove_lmstudio() if linker.is_lmstudio_installed() else 0
     ollama_blobs_removed, ollama_manifests_removed = (
         linker.autoremove_ollama() if linker.is_ollama_installed() else (0, 0)
     )
+    incomplete_removed = _autoremove_incomplete_installs()
 
-    if lmstudio_removed == 0 and ollama_blobs_removed == 0:
+    if lmstudio_removed == 0 and ollama_blobs_removed == 0 and incomplete_removed == 0:
         console.print("[green]No broken symlinks found.[/green]")
         return
 
     console.print(
         f"[green]Removed {lmstudio_removed} broken LM Studio symlink(s) and "
         f"{ollama_blobs_removed} broken Ollama blob(s) "
-        f"({ollama_manifests_removed} manifest(s) cleaned up).[/green]"
+        f"({ollama_manifests_removed} manifest(s) cleaned up), "
+        f"{incomplete_removed} incomplete install file(s) cleaned up.[/green]"
     )
 
 
