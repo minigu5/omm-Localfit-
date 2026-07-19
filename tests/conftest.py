@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from omm import cli, config, registry
+from omm import cli, config, predictor, registry
 
 
 @pytest.fixture
@@ -23,6 +23,7 @@ def isolated_omm_home(tmp_path, monkeypatch):
 
     monkeypatch.setattr(registry, "REGISTRY_PATH", config.REGISTRY_PATH)
     monkeypatch.setattr(cli, "MODELS_DIR", models_dir)
+    monkeypatch.setattr(predictor, "RECOMMEND_MODEL_PATH", config.RECOMMEND_MODEL_PATH)
 
     config.ensure_omm_home()
     return home

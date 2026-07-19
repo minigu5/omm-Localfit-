@@ -22,7 +22,13 @@ from sklearn.tree import DecisionTreeRegressor, _tree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from omm.featurize import FEATURE_ORDER, build_features, parse_param_count_billions, parse_quant_bits  # noqa: E402
+from omm.featurize import (  # noqa: E402
+    FEATURE_ORDER,
+    build_features,
+    parse_chip_score,
+    parse_param_count_billions,
+    parse_quant_bits,
+)
 from omm.rules import DEFAULT_RULES  # noqa: E402
 
 TELEMETRY_URL = "https://localfit-8ab57-default-rtdb.firebaseio.com/telemetry.json"
@@ -52,12 +58,18 @@ def real_rows_to_training_data(rows: list[dict]) -> tuple[list[list[float]], lis
         if "tokens_per_sec" not in row or "ram_gb" not in row:
             continue
         text = f"{row.get('model_installed', '')} {row.get('model_repo_id', '')}"
+        cpu_score, cpu_tier = parse_chip_score(row.get("cpu") or "")
+        gpu_score, gpu_tier = parse_chip_score(row.get("gpu") or "")
         features = build_features(
             ram_gb=row["ram_gb"],
             vram_gb=row.get("vram_gb"),
             unified_memory=bool(row.get("unified_memory")),
             param_count_b=parse_param_count_billions(text),
             quant_bits=parse_quant_bits(text),
+            cpu_score=cpu_score,
+            cpu_tier=cpu_tier,
+            gpu_score=gpu_score,
+            gpu_tier=gpu_tier,
         )
         X.append(features)
         y.append(float(row["tokens_per_sec"]))

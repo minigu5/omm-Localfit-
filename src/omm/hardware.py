@@ -22,6 +22,9 @@ class HardwareInfo:
     vram_free_gb: float | None
 
 
+_OS_DISPLAY_NAMES = {"Darwin": "macOS"}
+
+
 def _is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
@@ -78,7 +81,8 @@ def scan_hardware() -> HardwareInfo:
     ram_total_gb = vm.total / (1024**3)
     ram_available_gb = vm.available / (1024**3)
 
-    os_name = platform.system()
+    raw_os_name = platform.system()
+    os_name = _OS_DISPLAY_NAMES.get(raw_os_name, raw_os_name)
     os_version = platform.release()
 
     if _is_apple_silicon():
@@ -95,7 +99,7 @@ def scan_hardware() -> HardwareInfo:
             vram_free_gb=ram_available_gb,
         )
 
-    if os_name == "Darwin":
+    if raw_os_name == "Darwin":
         cpu = _mac_cpu_brand()
     else:
         cpu = platform.processor() or platform.machine()

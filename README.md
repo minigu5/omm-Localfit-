@@ -15,18 +15,20 @@ Requirements: Python 3.10+. GPU detection extras (`omm[nvidia]`) are installed a
 ## Usage
 
 ```sh
-omm scan                 # Print a hardware summary (RAM, VRAM, OS)
-omm recommend            # Suggest a model that fits this machine, then offer to install it
-omm search <query>       # Search curated models, cached candidates, and HuggingFace
-omm install <name>       # Download a model and link it into LM Studio / Ollama
-omm uninstall <name>     # Uninstall a model and clean up its symlinks/manifests
-omm list                 # Show models installed via omm and their linked status
-omm apply                # Retry linking installed models (e.g. after installing Ollama later)
-omm autoremove           # Clean up broken symlinks and orphaned partial downloads
-omm upgrade              # Reinstall omm from the latest source, then refresh rules/model data
+omm scan             # Print a hardware summary (RAM, VRAM, OS)
+omm recommend        # Suggest a model that fits this machine, then offer to install it
+omm search <query>   # Search curated models, cached candidates, and HuggingFace
+omm install <name>   # Download a model and link it into LM Studio / Ollama
+omm uninstall <name> # Uninstall a model and clean up its symlinks/manifests
+omm uninstall all    # Uninstall every model installed via omm
+omm list             # Show models installed via omm and their linked status
+omm relink           # Re-verify and repair every installed model's LM Studio/Ollama links
+omm autoremove       # Clean up broken symlinks and orphaned partial downloads
+omm upgrade          # Reinstall omm from the latest source, then refresh rules/model data
+omm help [command]   # Show help, same as --help
 ```
 
-`install` and `uninstall` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal.
+`install` and `uninstall` accept either a model name/reference or the numeric index shown by the last `omm search` or `omm list` run in that terminal. `search`/`install` mark models predicted not to run on this machine's hardware in red.
 
 ## Development
 

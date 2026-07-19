@@ -11,7 +11,7 @@ import json
 import requests
 
 from omm.config import RECOMMEND_MODEL_PATH
-from omm.featurize import build_features, parse_param_count_billions, parse_quant_bits
+from omm.featurize import build_features, parse_chip_score, parse_param_count_billions, parse_quant_bits
 from omm.hardware import HardwareInfo
 from omm.mltree import predict_ensemble
 
@@ -54,22 +54,29 @@ def load_model_with_change_note(url: str | None) -> tuple[dict | None, bool]:
     return artifact, artifact != previous
 
 
+def predict_speed(trees: list[dict], hw: HardwareInfo, candidate: dict) -> float:
+    """Predicted tokens/sec for one candidate on this hardware. <= 0 means
+    the trained model expects it not to run (OOM or similarly unviable)."""
+    has_gpu = hw.vram_total_gb is not None
+    text = f"{candidate.get('name', '')} {candidate.get('filename', '')} {candidate.get('repo_id', '')}"
+    cpu_score, cpu_tier = parse_chip_score(hw.cpu or "")
+    gpu_score, gpu_tier = parse_chip_score(hw.gpu_name or "")
+    features = build_features(
+        ram_gb=hw.ram_total_gb,
+        vram_gb=hw.vram_total_gb if has_gpu else 0.0,
+        unified_memory=hw.unified_memory,
+        param_count_b=parse_param_count_billions(text),
+        quant_bits=parse_quant_bits(text),
+        cpu_score=cpu_score,
+        cpu_tier=cpu_tier,
+        gpu_score=gpu_score,
+        gpu_tier=gpu_tier,
+    )
+    return predict_ensemble(trees, features)
+
+
 def rank_candidates(artifact: dict, hw: HardwareInfo) -> list[tuple[dict, float]]:
     trees = artifact["trees"]
-    has_gpu = hw.vram_total_gb is not None
-
-    ranked = []
-    for candidate in artifact["candidates"]:
-        text = f"{candidate.get('name', '')} {candidate.get('filename', '')}"
-        features = build_features(
-            ram_gb=hw.ram_total_gb,
-            vram_gb=hw.vram_total_gb if has_gpu else 0.0,
-            unified_memory=hw.unified_memory,
-            param_count_b=parse_param_count_billions(text),
-            quant_bits=parse_quant_bits(text),
-        )
-        predicted_tokens_per_sec = predict_ensemble(trees, features)
-        ranked.append((candidate, predicted_tokens_per_sec))
-
+    ranked = [(c, predict_speed(trees, hw, c)) for c in artifact["candidates"]]
     ranked.sort(key=lambda pair: pair[1], reverse=True)
     return ranked

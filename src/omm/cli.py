@@ -32,11 +32,44 @@ from omm.hub import AmbiguousModelError, ModelResolutionError, rank_quant_varian
 app = typer.Typer(
     name="omm",
     help="Open source Model Manager - package manager for local LLMs (GGUF).",
-    no_args_is_help=True,
 )
 console = Console()
 
 REPO_URL = "git+https://github.com/minigu5/Localfit.git"
+
+
+def _omm_version() -> str:
+    try:
+        return importlib.metadata.version("omm")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        console.print(f"omm {_omm_version()}")
+        raise typer.Exit(0)
+
+
+@app.command(name="help")
+def help_cmd(
+    ctx: typer.Context,
+    command: str = typer.Argument(None, help="Show help for a specific subcommand."),
+) -> None:
+    """Show help, same as --help."""
+    root_ctx = ctx.find_root()
+    if command is None:
+        console.print(root_ctx.get_help())
+        raise typer.Exit(0)
+
+    cmd_obj = root_ctx.command.get_command(root_ctx, command)
+    if cmd_obj is None:
+        console.print(f"[red]No such command '{command}'. See `omm help`.[/red]")
+        raise typer.Exit(1)
+
+    sub_ctx = cmd_obj.make_context(command, [], parent=root_ctx, resilient_parsing=True)
+    console.print(cmd_obj.get_help(sub_ctx))
 
 
 def _install_spec() -> str:
@@ -365,6 +398,20 @@ def install(
         raise typer.Exit(1) from e
 
     url, filename, repo_id = resolved.url, resolved.filename, resolved.repo_id
+
+    artifact = predictor.load_cached_model()
+    trees = artifact.get("trees") if artifact else None
+    if trees is not None:
+        hw = scan_hardware()
+        speed = predictor.predict_speed(trees, hw, {"repo_id": repo_id, "filename": filename})
+        if speed <= 0:
+            console.print(
+                f"[red]Warning: this hardware is predicted not to run {filename}.[/red]"
+            )
+            if not _ask_confirm("Install anyway?"):
+                console.print("[yellow]Cancelled.[/yellow]")
+                raise typer.Exit(0)
+
     dest = MODELS_DIR / filename
     if dest.exists():
         console.print(f"[yellow]{filename} already downloaded, skipping fetch.[/yellow]")
@@ -444,11 +491,39 @@ def _cleanup_incomplete_install(filename: str) -> bool:
     return cleaned
 
 
+def _remove_one(filename: str, entry: dict) -> None:
+    linked = entry.get("linked", {})
+    if linked.get("lmstudio"):
+        linker.unlink_lmstudio(filename, entry.get("repo_id"))
+    if linked.get("ollama"):
+        linker.unlink_ollama(entry.get("ollama_name", linker.sanitize_ollama_tag(filename)))
+
+    dest = MODELS_DIR / filename
+    dest.unlink(missing_ok=True)
+    dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
+
+    registry.remove_entry(filename)
+    console.print(f"[green]Removed {filename}[/green]")
+
+
 @app.command(name="uninstall")
 def remove(
     filename: str = typer.Argument(..., autocompletion=complete_remove_filename),
 ) -> None:
-    """Uninstall a model and clean up all symlinks/manifests."""
+    """Uninstall a model and clean up all symlinks/manifests. Pass `all` to
+    uninstall every model installed via omm."""
+    if filename.lower() == "all":
+        reg = registry.load_registry()
+        if not reg:
+            console.print("No models installed via omm yet.")
+            raise typer.Exit(0)
+        if not _ask_confirm(f"Uninstall all {len(reg)} model(s)?"):
+            console.print("[yellow]Cancelled.[/yellow]")
+            raise typer.Exit(0)
+        for name, entry in list(reg.items()):
+            _remove_one(name, entry)
+        return
+
     filename = _resolve_ref(filename)
     reg = registry.load_registry()
     entry = reg.get(filename)
@@ -462,18 +537,7 @@ def remove(
         console.print(f"[red]{filename} is not installed via omm. See `omm list`.[/red]")
         raise typer.Exit(1)
 
-    linked = entry.get("linked", {})
-    if linked.get("lmstudio"):
-        linker.unlink_lmstudio(filename, entry.get("repo_id"))
-    if linked.get("ollama"):
-        linker.unlink_ollama(entry.get("ollama_name", linker.sanitize_ollama_tag(filename)))
-
-    dest = MODELS_DIR / filename
-    dest.unlink(missing_ok=True)
-    dest.with_suffix(dest.suffix + ".part").unlink(missing_ok=True)
-
-    registry.remove_entry(filename)
-    console.print(f"[green]Removed {filename}[/green]")
+    _remove_one(filename, entry)
 
 
 @app.command(name="list")
@@ -524,6 +588,12 @@ def search(query: str) -> None:
         console.print(f"[yellow]No models found matching '{query}'.[/yellow]")
         raise typer.Exit(1)
 
+    # No network call here - only score against whatever's already cached
+    # locally, same as install completion.
+    artifact = predictor.load_cached_model()
+    trees = artifact.get("trees") if artifact else None
+    hw = scan_hardware() if trees else None
+
     groups = search_mod.group_by_family(combined)
     refs: list[str] = []
     for family in sorted(groups):
@@ -532,7 +602,10 @@ def search(query: str) -> None:
             ref = search_mod.install_ref(c)
             refs.append(ref)
             desc = c.get("description") or ""
-            console.print(f"  [{len(refs)}] {ref}  [dim]{desc}[/dim]")
+            if trees is not None and predictor.predict_speed(trees, hw, c) <= 0:
+                console.print(f"  [{len(refs)}] [red]{ref}  (predicted not to run on this hardware)[/red]")
+            else:
+                console.print(f"  [{len(refs)}] {ref}  [dim]{desc}[/dim]")
         console.print()
 
     session_cache.record_results(refs)
@@ -563,17 +636,22 @@ def _print_install_suggestions(query: str) -> None:
 
 
 @app.command()
-def apply() -> None:
-    """Retry linking any installed models that couldn't be linked before
-    (e.g. LM Studio or Ollama was installed after `omm install` ran)."""
+def relink() -> None:
+    """Re-verify every installed model's LM Studio/Ollama links and repair
+    them. Covers models that were never linked *and* ones whose link is now
+    broken, missing, or stale - link_lmstudio/link_ollama always replace the
+    existing symlink/manifest, so this always re-links rather than trusting
+    the registry's stored `linked` flag."""
     reg = registry.load_registry()
     if not reg:
         console.print("No models installed via omm yet.")
         raise typer.Exit(0)
 
-    linked_count = 0
+    lmstudio_installed = linker.is_lmstudio_installed()
+    ollama_installed = linker.is_ollama_installed()
+
+    relinked_count = 0
     skipped_missing = 0
-    already_ok = 0
 
     for filename, entry in reg.items():
         dest = MODELS_DIR / filename
@@ -581,12 +659,11 @@ def apply() -> None:
             skipped_missing += 1
             continue
 
-        linked = entry.get("linked", {})
         new_linked: dict[str, bool] = {}
         update_fields: dict[str, str] = {}
         changed = False
 
-        if not linked.get("lmstudio") and linker.is_lmstudio_installed():
+        if lmstudio_installed:
             try:
                 linker.link_lmstudio(dest, entry.get("repo_id"))
                 new_linked["lmstudio"] = True
@@ -594,7 +671,7 @@ def apply() -> None:
             except linker.LinkError as e:
                 console.print(f"[yellow]{filename}: LM Studio link skipped: {e}[/yellow]")
 
-        if not linked.get("ollama") and linker.is_ollama_installed():
+        if ollama_installed:
             ollama_tag = entry.get("ollama_name") or linker.sanitize_ollama_tag(filename)
             try:
                 linker.link_ollama(dest, ollama_tag)
@@ -606,13 +683,11 @@ def apply() -> None:
 
         if changed:
             registry.upsert_entry(filename, linked=new_linked, **update_fields)
-            linked_count += 1
-        else:
-            already_ok += 1
+            relinked_count += 1
 
     console.print(
-        f"[green]{linked_count} model(s) newly linked.[/green] "
-        f"{already_ok} already up to date, {skipped_missing} skipped (file missing)."
+        f"[green]{relinked_count} model(s) relinked/verified.[/green] "
+        f"{skipped_missing} skipped (file missing)."
     )
 
 
@@ -667,6 +742,8 @@ def _report_telemetry(filename: str, repo_id: str | None, tokens_per_sec: float 
     telemetry.send_event(
         {
             "os": info.os_name,
+            "cpu": info.cpu,
+            "gpu": info.gpu_name,
             "ram_gb": round(info.ram_total_gb, 1),
             "vram_gb": round(info.vram_total_gb, 1) if info.vram_total_gb is not None else None,
             "unified_memory": info.unified_memory,
