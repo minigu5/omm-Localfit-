@@ -58,6 +58,44 @@ def _claims_fake_provenance(text: str) -> bool:
     )
 
 
+_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
+_PREFERRED_QUANT_RE = re.compile(r"Q4_K_M", re.IGNORECASE)
+
+
+def pick_gguf_file(siblings: list[dict]) -> str | None:
+    """Pick one concrete .gguf filename out of a repo's file listing, same
+    quant preference as scripts/fetch_hf_candidates.py. Repos almost always
+    ship multiple quants, and `omm install org/repo` (no filename) refuses to
+    guess - so any name we print for the user to copy-paste needs a concrete
+    filename attached or it just fails with "specify one".
+    """
+    gguf_files = [
+        s["rfilename"]
+        for s in siblings
+        if s["rfilename"].lower().endswith(".gguf") and not _SHARD_RE.search(s["rfilename"])
+    ]
+    if not gguf_files:
+        return None
+    preferred = [f for f in gguf_files if _PREFERRED_QUANT_RE.search(f)]
+    return preferred[0] if preferred else gguf_files[0]
+
+
+def install_ref(candidate: dict) -> str:
+    """The string a user can actually pass to `omm install`, as opposed to
+    the human-readable label. A curated short name only resolves if it's a
+    literal CURATED_INDEX key; everything else (cached candidates, live HF
+    results) needs the unambiguous 'repo_id:filename' form.
+    """
+    name = candidate.get("name")
+    if name and name in hub.CURATED_INDEX:
+        return name
+    repo_id = candidate.get("repo_id")
+    filename = candidate.get("filename")
+    if repo_id and filename:
+        return f"{repo_id}:{filename}"
+    return repo_id or name or ""
+
+
 def guess_family(text: str) -> str:
     for family in FAMILY_KEYWORDS:
         if re.search(rf"\b{re.escape(family)}\b", text, re.IGNORECASE):
@@ -102,7 +140,7 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
     try:
         resp = requests.get(
             HF_SEARCH_API,
-            params={"search": query, "filter": "gguf", "limit": limit},
+            params={"search": query, "filter": "gguf", "limit": limit, "full": "true"},
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -117,11 +155,14 @@ def search_huggingface(query: str, limit: int = 20, timeout: float = 3.0) -> lis
             continue
         if _claims_fake_provenance(repo_id):
             continue
+        filename = pick_gguf_file(item.get("siblings", []))
+        if filename is None:
+            continue
         results.append(
             {
                 "name": repo_id,
                 "repo_id": repo_id,
-                "filename": None,
+                "filename": filename,
                 "description": "HuggingFace",
             }
         )

@@ -349,9 +349,9 @@ def search(query: str) -> None:
     for family in sorted(groups):
         console.print(f"[bold cyan]==> {family}[/bold cyan]")
         for c in groups[family]:
-            label = c.get("name") or c.get("repo_id")
+            ref = search_mod.install_ref(c)
             desc = c.get("description") or ""
-            console.print(f"  {label}  [dim]{desc}[/dim]")
+            console.print(f"  {ref}  [dim]{desc}[/dim]")
         console.print()
 
 
@@ -376,7 +376,7 @@ def _print_install_suggestions(query: str) -> None:
 
     console.print("[yellow]이런 모델을 찾으셨나요?[/yellow]")
     for s in suggestions:
-        console.print(f"  - {s.get('name') or s.get('repo_id')}")
+        console.print(f"  - {search_mod.install_ref(s)}")
 
 
 @app.command()

@@ -6,7 +6,6 @@ an omm release. Output feeds into scripts/train_model.py's artifact.
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -17,26 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from omm.featurize import parse_param_count_billions  # noqa: E402
 from omm.hub import CURATED_INDEX  # noqa: E402
 from omm.linker import sanitize_ollama_tag  # noqa: E402
-from omm.search import _claims_fake_provenance  # noqa: E402
+from omm.search import _claims_fake_provenance, pick_gguf_file  # noqa: E402
 
 HF_SEARCH_URL = "https://huggingface.co/api/models"
 CANDIDATE_LIMIT = 30
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "published" / "candidates.json"
-
-_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}")
-_PREFERRED_QUANT_RE = re.compile(r"Q4_K_M", re.IGNORECASE)
-
-
-def pick_gguf_file(siblings: list[dict]) -> str | None:
-    gguf_files = [
-        s["rfilename"]
-        for s in siblings
-        if s["rfilename"].lower().endswith(".gguf") and not _SHARD_RE.search(s["rfilename"])
-    ]
-    if not gguf_files:
-        return None
-    preferred = [f for f in gguf_files if _PREFERRED_QUANT_RE.search(f)]
-    return preferred[0] if preferred else gguf_files[0]
 
 
 def fetch_trending_candidates() -> list[dict]:
