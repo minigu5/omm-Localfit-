@@ -161,3 +161,64 @@ def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_h
 
     assert recorded["measured_tokens_per_sec"] == 30.0
     assert recorded["predicted_tokens_per_sec"] == 20.0
+
+
+def test_resolve_upload_decision_always_skips_prompt(isolated_omm_home):
+    cli.config_mod.update_config(telemetry_send_policy="always")
+
+    assert cli._resolve_upload_decision("prompt") is True
+
+
+def test_resolve_upload_decision_never_skips_prompt(isolated_omm_home, monkeypatch):
+    cli.config_mod.update_config(telemetry_send_policy="never")
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+
+    assert cli._resolve_upload_decision("prompt") is False
+
+
+def test_resolve_upload_decision_ask_falls_back_to_confirm(isolated_omm_home, monkeypatch):
+    cli.config_mod.update_config(telemetry_send_policy="ask")
+    monkeypatch.setattr(cli, "_ask_confirm", lambda message, **k: message == "prompt")
+
+    assert cli._resolve_upload_decision("prompt") is True
+    assert cli._resolve_upload_decision("other") is False
+
+
+def test_install_auto_uploads_without_confirm_when_policy_always(isolated_omm_home, monkeypatch):
+    cli.config_mod.update_config(telemetry_send_policy="always")
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    outcome = cli._install_impl(_resolved())
+
+    assert outcome.telemetry_sent is True
+    assert sent
+
+
+def test_install_never_uploads_without_confirm_when_policy_never(isolated_omm_home, monkeypatch):
+    cli.config_mod.update_config(telemetry_send_policy="never")
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_ask_confirm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no prompt"))
+    )
+    monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 42.0)
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no send"))
+    )
+
+    outcome = cli._install_impl(_resolved())
+
+    assert outcome.telemetry_sent is False

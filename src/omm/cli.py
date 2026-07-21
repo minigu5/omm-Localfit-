@@ -455,6 +455,15 @@ def _ask_confirm(message: str, default: bool = False) -> bool:
     return bool(answer)
 
 
+def _resolve_upload_decision(prompt: str) -> bool:
+    policy = load_config().get("telemetry_send_policy", "ask")
+    if policy == "always":
+        return True
+    if policy == "never":
+        return False
+    return _ask_confirm(prompt)
+
+
 @app.command()
 def recommend() -> None:
     """Scan hardware and suggest a model to install, ranked by a model
@@ -859,7 +868,7 @@ def _install_impl(
             console.print(f"[cyan]{tokens_per_sec:.1f} tok/s[/cyan]")
             _maybe_auto_calibrate(filename, repo_id, dest, tokens_per_sec)
 
-            want_upload = auto_upload or _ask_confirm(
+            want_upload = auto_upload or _resolve_upload_decision(
                 "Send this machine's benchmark result to the server?"
             )
             if want_upload:
