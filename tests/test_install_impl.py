@@ -270,3 +270,65 @@ def test_report_telemetry_omits_quality_fields_by_default(isolated_omm_home, mon
 
     assert "quality_pack_id" not in sent[0]
     assert sent[0]["sample_count"] == 1
+
+
+def test_use_quality_eval_reports_median_speed_and_quality_summary(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+    fake_result = {
+        "quality": {"correct": 6, "total": 8, "accuracy": 0.75},
+        "speed": {
+            "median_tokens_per_sec": 42.5,
+            "samples_tokens_per_sec": [41.0, 42.5, 44.0],
+            "runs": 3,
+        },
+    }
+    monkeypatch.setattr(cli.quality_mod, "evaluate_model", lambda tag, pack, speed_runs=3: fake_result)
+    unloaded = []
+    monkeypatch.setattr(cli.quality_mod, "unload_model", lambda tag: unloaded.append(tag) or True)
+    sent = []
+    monkeypatch.setattr(cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True)
+
+    outcome = cli._install_impl(
+        _resolved(),
+        auto_upload=True,
+        use_quality_eval=True,
+        quality_pack={"pack_id": "pack-1", "pack_version": "1.1.0", "items": []},
+        stop_event=threading.Event(),
+    )
+
+    assert outcome.tokens_per_sec == 42.5
+    assert unloaded == ["tinyllama"]
+    event = sent[0]
+    assert event["sample_count"] == 3
+    assert event["tokens_per_sec_min"] == 41.0
+    assert event["tokens_per_sec_max"] == 44.0
+    assert event["quality_correct"] == 6
+    assert event["quality_total"] == 8
+
+
+def test_use_quality_eval_failure_reports_no_result(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: None)
+    monkeypatch.setattr(cli, "download_file", lambda url, dest, stop_check=None: dest.write_bytes(b"x"))
+    _stub_common(monkeypatch)
+
+    def raise_eval(tag, pack, speed_runs=3):
+        raise cli.quality_mod.QualityEvaluationError("ollama returned nothing")
+
+    monkeypatch.setattr(cli.quality_mod, "evaluate_model", raise_eval)
+    monkeypatch.setattr(cli.quality_mod, "unload_model", lambda tag: True)
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no send"))
+    )
+
+    outcome = cli._install_impl(
+        _resolved(),
+        auto_upload=True,
+        use_quality_eval=True,
+        quality_pack={"pack_id": "pack-1", "pack_version": "1.1.0", "items": []},
+        stop_event=threading.Event(),
+    )
+
+    assert outcome.tokens_per_sec is None
+    assert outcome.telemetry_sent is False

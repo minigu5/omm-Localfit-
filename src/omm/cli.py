@@ -788,6 +788,8 @@ def _install_impl(
     auto_upload: bool = False,
     skip_unfit: bool = False,
     stop_event: threading.Event | None = None,
+    use_quality_eval: bool = False,
+    quality_pack: dict | None = None,
 ) -> InstallOutcome:
     """Core of `omm install`: download, link, register, benchmark+calibrate
     automatically, optionally report telemetry. Shared by the plain
@@ -855,14 +857,42 @@ def _install_impl(
 
     tokens_per_sec = None
     telemetry_sent = False
+    sample_count = 1
+    speed_min = speed_max = None
+    quality_summary = None
     if linked["ollama"]:
         console.print("Benchmarking...")
-        try:
-            tokens_per_sec = _run_interruptible(
-                lambda: benchmark.benchmark_ollama(ollama_tag), stop_event
-            )
-        except _Interrupted as e:
-            raise ContributionStopped(filename) from e
+        if use_quality_eval:
+            try:
+                result = _run_interruptible(
+                    lambda: quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3),
+                    stop_event,
+                )
+            except _Interrupted as e:
+                raise ContributionStopped(filename) from e
+            except quality_mod.QualityEvaluationError:
+                result = None
+            finally:
+                quality_mod.unload_model(ollama_tag)
+            if result is not None:
+                tokens_per_sec = result["speed"]["median_tokens_per_sec"]
+                samples = result["speed"]["samples_tokens_per_sec"]
+                sample_count = result["speed"]["runs"]
+                speed_min, speed_max = min(samples), max(samples)
+                quality_summary = {
+                    "pack_id": quality_pack["pack_id"],
+                    "pack_version": quality_pack.get("pack_version"),
+                    "correct": result["quality"]["correct"],
+                    "total": result["quality"]["total"],
+                    "accuracy": result["quality"]["accuracy"],
+                }
+        else:
+            try:
+                tokens_per_sec = _run_interruptible(
+                    lambda: benchmark.benchmark_ollama(ollama_tag), stop_event
+                )
+            except _Interrupted as e:
+                raise ContributionStopped(filename) from e
 
         if tokens_per_sec:
             console.print(f"[cyan]{tokens_per_sec:.1f} tok/s[/cyan]")
@@ -872,7 +902,15 @@ def _install_impl(
                 "Send this machine's benchmark result to the server?"
             )
             if want_upload:
-                telemetry_sent = _report_telemetry(filename, repo_id, tokens_per_sec)
+                telemetry_sent = _report_telemetry(
+                    filename,
+                    repo_id,
+                    tokens_per_sec,
+                    sample_count=sample_count,
+                    speed_min=speed_min,
+                    speed_max=speed_max,
+                    quality=quality_summary,
+                )
             else:
                 telemetry.log_attempt("declined_by_user", filename)
         else:
@@ -1843,7 +1881,9 @@ class _EscListener:
             pass  # best-effort; Ctrl+C still works as a fallback
 
 
-def _run_contribution_loop(queue, stop_event: threading.Event, refetch) -> _ContributionStats:
+def _run_contribution_loop(
+    queue, stop_event: threading.Event, refetch, quality_pack: dict | None = None
+) -> _ContributionStats:
     stats = _ContributionStats(benchmarked=[])
     while not stop_event.is_set():
         candidate = queue.next_candidate(refetch=refetch)
@@ -1861,7 +1901,12 @@ def _run_contribution_loop(queue, stop_event: threading.Event, refetch) -> _Cont
 
         try:
             outcome = _install_impl(
-                resolved, auto_upload=True, skip_unfit=True, stop_event=stop_event
+                resolved,
+                auto_upload=True,
+                skip_unfit=True,
+                stop_event=stop_event,
+                use_quality_eval=True,
+                quality_pack=quality_pack,
             )
         except ContributionStopped as e:
             _cleanup_incomplete_install(e.filename)
@@ -1948,6 +1993,12 @@ def contribute() -> None:
         )
         raise typer.Exit(1)
 
+    try:
+        quality_pack, _ = quality_mod.load_pack()
+    except quality_mod.QualityEvaluationError as error:
+        console.print(f"[red]Could not load the quality pack: {error}[/red]")
+        raise typer.Exit(1) from error
+
     config = load_config()
     artifact, _ = _load_recommendation_with_change_note(config)
     if not artifact or not artifact.get("candidates"):
@@ -1970,7 +2021,7 @@ def contribute() -> None:
     listener.start()
     start_time = time.monotonic()
     try:
-        stats = _run_contribution_loop(queue, listener.stop_event, refetch)
+        stats = _run_contribution_loop(queue, listener.stop_event, refetch, quality_pack=quality_pack)
     finally:
         listener.stop_event.set()
 
