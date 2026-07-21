@@ -12,7 +12,7 @@ def test_send_event_skips_when_not_opted_in_and_not_forced(isolated_omm_home, mo
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_opt_in": False, "telemetry_endpoint": "https://example.com"},
+        lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": "https://example.com"},
     )
     called = []
     monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)))
@@ -27,7 +27,7 @@ def test_send_event_sends_when_forced_even_if_not_opted_in(isolated_omm_home, mo
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_opt_in": False, "telemetry_endpoint": "https://example.com"},
+        lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": "https://example.com"},
     )
     called = []
     monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)) or _FakeResp(200))
@@ -42,7 +42,7 @@ def test_send_event_forced_still_requires_endpoint(isolated_omm_home, monkeypatc
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_opt_in": False, "telemetry_endpoint": None},
+        lambda: {"telemetry_send_policy": "ask", "telemetry_endpoint": None},
     )
     called = []
     monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)))
@@ -57,7 +57,7 @@ def test_send_event_sends_when_opted_in_without_force(isolated_omm_home, monkeyp
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_opt_in": True, "telemetry_endpoint": "https://example.com"},
+        lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
     )
     called = []
     monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: called.append((a, k)) or _FakeResp(200))
@@ -72,7 +72,7 @@ def test_send_event_logs_sent_ok_on_success(isolated_omm_home, monkeypatch):
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_opt_in": True, "telemetry_endpoint": "https://example.com"},
+        lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
     )
     monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: _FakeResp(200))
 
@@ -87,7 +87,7 @@ def test_send_event_queues_and_logs_on_network_failure(isolated_omm_home, monkey
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_opt_in": True, "telemetry_endpoint": "https://example.com"},
+        lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
     )
 
     def raise_network_error(*a, **k):
@@ -108,7 +108,7 @@ def test_send_event_queues_and_logs_on_http_error(isolated_omm_home, monkeypatch
     monkeypatch.setattr(
         telemetry,
         "load_config",
-        lambda: {"telemetry_opt_in": True, "telemetry_endpoint": "https://example.com"},
+        lambda: {"telemetry_send_policy": "always", "telemetry_endpoint": "https://example.com"},
     )
     monkeypatch.setattr(telemetry.requests, "post", lambda *a, **k: _FakeResp(500))
 

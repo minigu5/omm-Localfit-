@@ -99,7 +99,7 @@ def _post_event(event: dict[str, Any]) -> bool:
 
 def send_event(event: dict[str, Any], force: bool = False) -> bool:
     config_data = load_config()
-    if not force and not config_data.get("telemetry_opt_in"):
+    if not force and config_data.get("telemetry_send_policy") != "always":
         log_attempt("skipped_opt_out")
         return False
     ok = _post_event(event)
