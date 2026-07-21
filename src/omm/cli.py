@@ -1183,7 +1183,7 @@ def configure_telemetry(
     console.print(table)
 
 
-@app.command()
+@setting_app.command(name="calibrate")
 def calibrate(
     model_name: str = typer.Argument(
         None,
@@ -1311,6 +1311,7 @@ def setting_menu(ctx: typer.Context) -> None:
                 choices=[
                     questionary.Choice("UI mode", value="ui"),
                     questionary.Choice("Telemetry", value="telemetry"),
+                    questionary.Choice("Calibrate", value="calibrate"),
                     questionary.Choice("Catalog trust", value="catalog-trust"),
                     questionary.Choice("Catalog status", value="catalog-status"),
                     questionary.Choice("Catalog rollback", value="catalog-rollback"),
@@ -1346,6 +1347,11 @@ def setting_menu(ctx: typer.Context) -> None:
                     enable=(action == "enable"),
                     disable=(action == "disable"),
                 )
+        elif choice == "calibrate":
+            model_name = questionary.text(
+                "Model to calibrate (blank for smallest installed):"
+            ).ask()
+            calibrate(model_name or None)
         elif choice == "catalog-trust":
             manifest_url = questionary.text("Signed manifest URL (https://...):").ask()
             public_key = questionary.text("Base64 Ed25519 public key:").ask()

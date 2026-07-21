@@ -25,7 +25,7 @@ def test_calibrate_records_local_factor(isolated_omm_home, monkeypatch):
     )
     monkeypatch.setattr(cli.benchmark, "benchmark_ollama", lambda tag: 30.0)
 
-    result = runner.invoke(cli.app, ["calibrate", filename])
+    result = runner.invoke(cli.app, ["setting", "calibrate", filename])
 
     assert result.exit_code == 0, result.stdout
     assert "correction ×1.50" in result.stdout
