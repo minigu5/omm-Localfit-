@@ -222,3 +222,51 @@ def test_install_never_uploads_without_confirm_when_policy_never(isolated_omm_ho
     outcome = cli._install_impl(_resolved())
 
     assert outcome.telemetry_sent is False
+
+
+def test_report_telemetry_includes_quality_fields_when_provided(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        cli, "scan_hardware",
+        lambda: SimpleNamespace(ram_total_gb=16.0, vram_total_gb=None, unified_memory=False, gpu_tflops=None),
+    )
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    cli._report_telemetry(
+        "small:latest",
+        "org/small",
+        42.5,
+        size_bytes=123,
+        sample_count=3,
+        speed_min=40.0,
+        speed_max=45.0,
+        quality={"pack_id": "pack-1", "pack_version": "1.1.0", "correct": 6, "total": 8, "accuracy": 0.75},
+    )
+
+    event = sent[0]
+    assert event["model_size_bytes"] == 123
+    assert event["sample_count"] == 3
+    assert event["tokens_per_sec_min"] == 40.0
+    assert event["tokens_per_sec_max"] == 45.0
+    assert event["quality_pack_id"] == "pack-1"
+    assert event["quality_correct"] == 6
+    assert event["quality_total"] == 8
+    assert event["quality_accuracy"] == 0.75
+
+
+def test_report_telemetry_omits_quality_fields_by_default(isolated_omm_home, monkeypatch):
+    monkeypatch.setattr(
+        cli, "scan_hardware",
+        lambda: SimpleNamespace(ram_total_gb=16.0, vram_total_gb=None, unified_memory=False, gpu_tflops=None),
+    )
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    cli._report_telemetry("model.gguf", "org/repo", 10.0)
+
+    assert "quality_pack_id" not in sent[0]
+    assert sent[0]["sample_count"] == 1

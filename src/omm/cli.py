@@ -1704,7 +1704,17 @@ def benchmark_cmd(
         console.print_json(data=report)
 
 
-def _report_telemetry(filename: str, repo_id: str | None, tokens_per_sec: float | None) -> bool:
+def _report_telemetry(
+    filename: str,
+    repo_id: str | None,
+    tokens_per_sec: float | None,
+    *,
+    size_bytes: int | None = None,
+    sample_count: int = 1,
+    speed_min: float | None = None,
+    speed_max: float | None = None,
+    quality: dict | None = None,
+) -> bool:
     if tokens_per_sec is None:
         # Ollama daemon wasn't reachable - not a real "it doesn't run" signal,
         # so skip rather than polluting the speed-regression training data.
@@ -1714,26 +1724,34 @@ def _report_telemetry(filename: str, repo_id: str | None, tokens_per_sec: float 
         )
         return False
     info = scan_hardware()
-    model_file = MODELS_DIR / filename
-    sent = telemetry.send_event(
-        {
-            "ram_gb": round(info.ram_total_gb, 1),
-            "vram_gb": round(info.vram_total_gb, 1) if info.vram_total_gb is not None else None,
-            "unified_memory": info.unified_memory,
-            "gpu_tflops": info.gpu_tflops,
-            "model_installed": filename,
-            "model_repo_id": repo_id,
-            "model_size_bytes": model_file.stat().st_size if model_file.exists() else None,
-            "engine": "ollama",
-            "benchmark_version": 4,
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
-            "tokens_per_sec": round(tokens_per_sec, 2),
-            "sample_count": 1,
-            "tokens_per_sec_min": round(tokens_per_sec, 2),
-            "tokens_per_sec_max": round(tokens_per_sec, 2),
-        },
-        force=True,
-    )
+    if size_bytes is None:
+        model_file = MODELS_DIR / filename
+        size_bytes = model_file.stat().st_size if model_file.exists() else None
+    event = {
+        "ram_gb": round(info.ram_total_gb, 1),
+        "vram_gb": round(info.vram_total_gb, 1) if info.vram_total_gb is not None else None,
+        "unified_memory": info.unified_memory,
+        "gpu_tflops": info.gpu_tflops,
+        "model_installed": filename,
+        "model_repo_id": repo_id,
+        "model_size_bytes": size_bytes,
+        "engine": "ollama",
+        "benchmark_version": 4,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "tokens_per_sec": round(tokens_per_sec, 2),
+        "sample_count": sample_count,
+        "tokens_per_sec_min": round(speed_min if speed_min is not None else tokens_per_sec, 2),
+        "tokens_per_sec_max": round(speed_max if speed_max is not None else tokens_per_sec, 2),
+    }
+    if quality is not None:
+        event.update(
+            quality_pack_id=quality["pack_id"],
+            quality_pack_version=quality["pack_version"],
+            quality_correct=quality["correct"],
+            quality_total=quality["total"],
+            quality_accuracy=quality["accuracy"],
+        )
+    sent = telemetry.send_event(event, force=True)
     if not sent:
         console.print("[dim]Telemetry not sent (will retry next time you run omm).[/dim]")
     return sent
