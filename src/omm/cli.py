@@ -1187,12 +1187,14 @@ def configure_telemetry(
         "--endpoint",
         help="Self-hosted HTTPS endpoint, localhost URL, or 'none' to clear it.",
     ),
-    enable: bool = typer.Option(False, "--enable", help="Allow benchmark uploads."),
-    disable: bool = typer.Option(False, "--disable", help="Keep benchmarks local only."),
+    enable: bool = typer.Option(False, "--enable", help="Always send benchmark results without asking."),
+    disable: bool = typer.Option(False, "--disable", help="Never send benchmark results."),
+    ask: bool = typer.Option(False, "--ask", help="Ask every time before sending (default)."),
 ) -> None:
-    """Configure optional uploads; the default remains local-only."""
-    if enable and disable:
-        console.print("[red]Choose only one of --enable or --disable.[/red]")
+    """Configure optional uploads; the default remains asking every time."""
+    chosen = [flag for flag in (enable, disable, ask) if flag]
+    if len(chosen) > 1:
+        console.print("[red]Choose only one of --enable, --disable, or --ask.[/red]")
         raise typer.Exit(1)
     current = load_config()
     changes = {}
@@ -1214,15 +1216,18 @@ def configure_telemetry(
         if not prospective_endpoint:
             console.print("[red]Set --endpoint before enabling uploads.[/red]")
             raise typer.Exit(1)
-        changes["telemetry_opt_in"] = True
+        changes["telemetry_send_policy"] = "always"
     elif disable:
-        changes["telemetry_opt_in"] = False
+        changes["telemetry_send_policy"] = "never"
+    elif ask:
+        changes["telemetry_send_policy"] = "ask"
     if changes:
         current = config_mod.update_config(**changes)
     table = Table(title="Benchmark data policy", show_header=False)
     table.add_column("Field", style="cyan")
     table.add_column("Value")
-    table.add_row("Uploads", "enabled" if current.get("telemetry_opt_in") else "disabled")
+    policy = current.get("telemetry_send_policy", "ask")
+    table.add_row("Uploads", {"always": "always", "never": "never", "ask": "ask (default)"}[policy])
     table.add_row("Backend", str(current.get("telemetry_backend") or "local"))
     table.add_row("Endpoint", str(current.get("telemetry_endpoint") or "not configured"))
     console.print(table)
@@ -1380,8 +1385,9 @@ def setting_menu(ctx: typer.Context) -> None:
                 questionary.select(
                     "Uploads:",
                     choices=[
-                        questionary.Choice("Enable", value="enable"),
-                        questionary.Choice("Disable", value="disable"),
+                        questionary.Choice("Always send", value="enable"),
+                        questionary.Choice("Never send", value="disable"),
+                        questionary.Choice("Ask every time", value="ask"),
                         questionary.Choice("Leave unchanged", value="skip"),
                     ],
                 )
@@ -1391,6 +1397,7 @@ def setting_menu(ctx: typer.Context) -> None:
                     endpoint=endpoint or None,
                     enable=(action == "enable"),
                     disable=(action == "disable"),
+                    ask=(action == "ask"),
                 )
         elif choice == "calibrate":
             model_name = questionary.text(
