@@ -492,38 +492,38 @@ def _git_update_src() -> subprocess.CompletedProcess:
 
 @app.command()
 def update() -> None:
-    """Reinstall omm from the latest source via pipx, then refresh rules/model data."""
+    """Reinstall omm from the latest source, then refresh rules/model data.
+    Uses a persistent editable clone (SRC_DIR) for a git-pull-speed update
+    once migrated; a one-time pipx --editable install otherwise."""
+    migrated = _src_head_commit() is not None
     installed = _installed_commit()
     latest = _remote_head_commit() if installed else None
     if latest:
         version_check.record(latest)
-    if installed and latest and installed == latest:
+    if migrated and installed and latest and installed == latest:
         console.print(f"[green]omm is already up to date ({installed[:7]}).[/green]")
         _refresh_data()
         return
 
-    console.print(f"Updating omm from {REPO_URL} ...")
     try:
-        # --no-deps skips reinstalling omm's (rarely-changed) dependencies,
-        # which is most of the wall-clock cost of a `pipx install --force`.
-        # Verify with `pip check` afterwards and fall back to a full
-        # dependency install only if this commit actually changed them.
-        result = _run_pipx_install_with_progress(
-            ["pipx", "install", "--force", "--pip-args=--no-deps", _install_spec()]
-        )
-        if result.returncode == 0 and not _deps_satisfied():
-            result = _run_pipx_install_with_progress(
-                ["pipx", "install", "--force", _install_spec()]
-            )
+        if not migrated:
+            result = _migrate_to_editable_install()
+        else:
+            console.print(f"Updating omm from {REPO_URL} ...")
+            result = _git_update_src()
+            if result.returncode == 0 and not _deps_satisfied():
+                result = _run_pipx_install_with_progress(
+                    ["pipx", "install", "--force", "--editable", _install_spec()]
+                )
     except FileNotFoundError:
         console.print(
-            "[red]pipx not found. Install it first, or rerun the installer:[/red]\n"
+            "[red]git or pipx not found. Install them first, or rerun the installer:[/red]\n"
             "  curl -fsSL https://raw.githubusercontent.com/minigu5/Localfit/main/install.sh | sh"
         )
         raise typer.Exit(1)
 
     if result.returncode != 0:
-        console.print(f"[red]pipx install failed:[/red]\n{result.stderr}")
+        console.print(f"[red]Update failed:[/red]\n{result.stderr}")
         raise typer.Exit(1)
 
     console.print("[green]omm reinstalled from the latest source.[/green]")

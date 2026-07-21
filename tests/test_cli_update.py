@@ -30,56 +30,110 @@ def test_install_spec_adds_nvidia_extra_on_non_darwin(monkeypatch):
     assert cli._install_spec() == f"{cli.SRC_DIR}[nvidia]"
 
 
-def test_update_reinstalls_via_pipx_then_refreshes_data(monkeypatch):
-    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(cli, "_installed_commit", lambda: None)
-    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
-    calls = []
-
-    def fake_popen(args, **kwargs):
-        calls.append(args)
-        return _FakeProc(["creating virtual environment...\n", "done!\n"])
-
-    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+def test_update_migrates_when_not_yet_migrated_even_if_commit_matches(monkeypatch):
+    """Migration must run purely because SRC_DIR isn't set up yet - even
+    when the old-style installed commit already equals latest, since the
+    point of migrating is switching update *mechanism*, not code."""
+    same_commit = "abc1234" * 5 + "abc12345"
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: None)
+    monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda: same_commit)
+    migrate_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_migrate_to_editable_install",
+        lambda: migrate_calls.append(1) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
     refresh_calls = []
     monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
 
     result = runner.invoke(cli.app, ["update"])
 
     assert result.exit_code == 0, result.stdout
-    assert calls == [["pipx", "install", "--force", "--pip-args=--no-deps", cli.REPO_URL]]
+    assert migrate_calls == [1]
     assert refresh_calls == [1]
     assert "reinstalled" in result.stdout.lower()
 
 
-def test_update_falls_back_to_full_install_when_deps_missing_after_no_deps_install(monkeypatch):
-    """--no-deps skips reinstalling unchanged dependencies for speed, but if
-    this commit actually added/changed a dependency, `pip check` catches the
-    gap and update() must redo the install with deps included rather than
-    leaving omm broken."""
-    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(cli, "_installed_commit", lambda: None)
-    monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
-    calls = []
-
-    def fake_popen(args, **kwargs):
-        calls.append(args)
-        return _FakeProc(["creating virtual environment...\n", "done!\n"])
-
-    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
+def test_update_fast_path_skips_pipx_when_deps_unaffected(monkeypatch):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    git_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda: git_calls.append(1) or subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
+    pipx_calls = []
+    monkeypatch.setattr(cli, "_run_pipx_install_with_progress", lambda args: pipx_calls.append(args))
+    refresh_calls = []
+    monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
 
     result = runner.invoke(cli.app, ["update"])
 
     assert result.exit_code == 0, result.stdout
-    assert calls == [
-        ["pipx", "install", "--force", "--pip-args=--no-deps", cli.REPO_URL],
-        ["pipx", "install", "--force", cli.REPO_URL],
-    ]
+    assert git_calls == [1]
+    assert pipx_calls == []
+    assert refresh_calls == [1]
+
+
+def test_update_fast_path_falls_back_to_pipx_when_deps_changed(monkeypatch):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
+    pipx_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_pipx_install_with_progress",
+        lambda args: pipx_calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="", stderr=""),
+    )
+    refresh_calls = []
+    monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 0, result.stdout
+    assert pipx_calls == [["pipx", "install", "--force", "--editable", cli._install_spec()]]
+    assert refresh_calls == [1]
+
+
+def test_update_reports_error_when_git_update_fails(monkeypatch):
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda: subprocess.CompletedProcess([], 1, stdout="", stderr="fetch failed"),
+    )
+    refresh_calls = []
+    monkeypatch.setattr(cli, "_refresh_data", lambda: refresh_calls.append(1))
+
+    result = runner.invoke(cli.app, ["update"])
+
+    assert result.exit_code == 1
+    assert "fetch failed" in result.stdout
+    assert refresh_calls == []
 
 
 def test_update_reports_error_when_pipx_missing(monkeypatch):
-    monkeypatch.setattr(cli, "_installed_commit", lambda: None)
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
 
     def _raise(*args, **kwargs):
         raise FileNotFoundError("pipx")
@@ -91,12 +145,20 @@ def test_update_reports_error_when_pipx_missing(monkeypatch):
     result = runner.invoke(cli.app, ["update"])
 
     assert result.exit_code == 1
-    assert "pipx not found" in result.stdout
+    assert "not found" in result.stdout
     assert refresh_calls == []
 
 
 def test_update_reports_error_and_skips_data_refresh_on_pipx_failure(monkeypatch):
-    monkeypatch.setattr(cli, "_installed_commit", lambda: None)
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
+    monkeypatch.setattr(
+        cli,
+        "_git_update_src",
+        lambda: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(cli, "_deps_satisfied", lambda: False)
     monkeypatch.setattr(
         cli.subprocess,
         "Popen",
@@ -113,8 +175,10 @@ def test_update_reports_error_and_skips_data_refresh_on_pipx_failure(monkeypatch
 
 
 def test_update_skips_reinstall_when_already_up_to_date(monkeypatch):
-    monkeypatch.setattr(cli, "_installed_commit", lambda: "abc1234" * 5 + "abc12345")
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "abc1234" * 5 + "abc12345")
+    same_commit = "abc1234" * 5 + "abc12345"
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
+    monkeypatch.setattr(cli, "_remote_head_commit", lambda: same_commit)
     popen_calls = []
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *a, **k: popen_calls.append(a) or _FakeProc([]))
     refresh_calls = []
@@ -136,6 +200,7 @@ def test_update_refreshes_stale_cache_with_live_remote_head(monkeypatch):
     stale pre-update reading (false "Update available") until the TTL
     expires."""
     same_commit = "abc1234" * 5 + "abc12345"
+    monkeypatch.setattr(cli, "_src_head_commit", lambda: same_commit)
     monkeypatch.setattr(cli, "_installed_commit", lambda: same_commit)
     monkeypatch.setattr(cli, "_remote_head_commit", lambda: same_commit)
     monkeypatch.setattr(cli, "_refresh_data", lambda: None)
@@ -146,27 +211,6 @@ def test_update_refreshes_stale_cache_with_live_remote_head(monkeypatch):
 
     assert result.exit_code == 0, result.stdout
     assert recorded == [same_commit]
-
-
-def test_update_reinstalls_when_installed_commit_differs_from_remote(monkeypatch):
-    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(cli, "_installed_commit", lambda: "old" * 13 + "old")
-    monkeypatch.setattr(cli, "_remote_head_commit", lambda: "new" * 13 + "new")
-    monkeypatch.setattr(cli, "_deps_satisfied", lambda: True)
-    calls = []
-
-    def fake_popen(args, **kwargs):
-        calls.append(args)
-        return _FakeProc(["creating virtual environment...\n", "done!\n"])
-
-    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(cli, "_refresh_data", lambda: None)
-
-    result = runner.invoke(cli.app, ["update"])
-
-    assert result.exit_code == 0, result.stdout
-    assert calls == [["pipx", "install", "--force", "--pip-args=--no-deps", cli.REPO_URL]]
-    assert "up to date" not in result.stdout.lower()
 
 
 def test_installed_commit_reads_vcs_info_from_direct_url_json(monkeypatch):
