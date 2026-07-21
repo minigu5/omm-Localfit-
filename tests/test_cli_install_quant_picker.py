@@ -45,6 +45,10 @@ def test_install_with_repo_only_prompts_quant_and_recurses_with_choice(isolated_
 
     monkeypatch.setattr(cli, "resolve_model", fake_resolve)
     monkeypatch.setattr(cli, "scan_hardware", lambda: _HARDWARE)
+    # questionary.select(...) is evaluated eagerly as an argument to
+    # _ask_select, so it must be stubbed too - constructing a real Question
+    # tries to open a console, which CI runners (esp. Windows) don't have.
+    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: chosen_filename)
 
     result = runner.invoke(cli.app, ["install", repo_id])
@@ -63,6 +67,7 @@ def test_install_cancels_cleanly_when_quant_prompt_is_escaped(isolated_omm_home,
 
     monkeypatch.setattr(cli, "resolve_model", fake_resolve)
     monkeypatch.setattr(cli, "scan_hardware", lambda: _HARDWARE)
+    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_ask_select", lambda question: None)
 
     result = runner.invoke(cli.app, ["install", repo_id])

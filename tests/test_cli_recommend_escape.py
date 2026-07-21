@@ -1,15 +1,22 @@
 from unittest.mock import MagicMock
 
 import questionary
+from prompt_toolkit.input import DummyInput
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.output import DummyOutput
 
 from omm.cli import _add_escape_to_cancel
 
 
 def test_escape_binding_triggers_keyboard_interrupt_style_exit():
+    # DummyInput/DummyOutput: constructing a real Question tries to open a
+    # console, which CI runners (esp. Windows, with stdout captured by
+    # pytest) don't have.
     question = questionary.select(
         "Pick one:",
         choices=[questionary.Choice(title="a", value="a")],
+        input=DummyInput(),
+        output=DummyOutput(),
     )
 
     _add_escape_to_cancel(question)
