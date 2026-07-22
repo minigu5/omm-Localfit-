@@ -15,12 +15,13 @@ Requirements: Python 3.10+. GPU detection extras (`omm[nvidia]`) are installed a
 ## Usage
 
 ```sh
-omm scan             # Print a hardware summary (RAM, VRAM, OS)
+omm scan             # Print a hardware, runner, and model summary (RAM, VRAM, OS)
 omm recommend        # Suggest a model that fits this machine, then offer to install it
 omm tune <name>      # Recommend context, GPU offload, threads, and batch size
 omm benchmark qwen3:4b exaone3.5:2.4b  # Local quality + speed smoke evidence
 omm search <query>   # Search curated models, cached candidates, and HuggingFace
 omm install <name>   # Download a model and link it into LM Studio / Ollama
+omm import           # Adopt GGUF files already sitting in Ollama/LM Studio into the hub
 omm uninstall <name> # Uninstall a model and clean up its symlinks/manifests
 omm uninstall all    # Uninstall every model installed via omm
 omm list             # Show models installed via omm and their linked status
@@ -29,12 +30,15 @@ omm upgrade <name>   # Refresh a model against its source if it has changed sinc
 omm upgrade          # Check every installed model for updates
 omm link             # Re-verify and repair every installed model's LM Studio/Ollama links
 omm link <directory> # Reuse central GGUF files in another app without copying them
-omm calibrate        # Locally correct predicted speed with an installed Ollama model
-omm setting          # Interactive menu for UI mode, telemetry, and catalog trust
-omm setting ui compact       # Use short everyday tables (`detailed` for diagnostics)
-omm setting catalog-status   # Show signed recommendation data and rollback snapshots
 omm autoremove       # Clean up broken symlinks and orphaned partial downloads
-omm update           # Reinstall omm from the latest source, then refresh rules/model data
+omm contribute       # Repeatedly install/benchmark/upload hardware-fit models to grow the dataset
+omm update           # Git-pull the latest source into ~/.omm/src, then refresh rules/model data
+omm setting          # Interactive menu for UI mode, telemetry, upload policy, and catalog trust
+omm setting ui compact          # Use short everyday tables (`detailed` for diagnostics)
+omm setting telemetry --endpoint <url>  # Configure where benchmark telemetry is sent
+omm setting upload --enable|--disable|--ask  # Configure the benchmark-upload send policy
+omm setting calibrate <name>    # Locally correct predicted speed with an installed Ollama model
+omm setting catalog-status      # Show signed recommendation data and rollback snapshots
 omm help [command]   # Show help, same as --help
 ```
 
