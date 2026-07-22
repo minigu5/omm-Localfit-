@@ -23,11 +23,33 @@ jobs:
           pip install -e .
           pip install -r requirements-train.txt
 
+      - name: Preflight protected telemetry access
+        env:
+          LOCALFIT_TELEMETRY_EXPORT_URL: ${{ secrets.LOCALFIT_TELEMETRY_EXPORT_URL }}
+          LOCALFIT_ADMIN_TOKEN: ${{ secrets.LOCALFIT_ADMIN_TOKEN }}
+        run: |
+          test -n "$LOCALFIT_TELEMETRY_EXPORT_URL" || { echo "LOCALFIT_TELEMETRY_EXPORT_URL is required"; exit 1; }
+          if ! python -c 'import os; from urllib.parse import urlparse; p = urlparse(os.environ["LOCALFIT_TELEMETRY_EXPORT_URL"]); h = (p.hostname or "").lower(); raise SystemExit(not ((h.endswith(".firebaseio.com") or h.endswith(".firebasedatabase.app")) and p.path.endswith(".json")))'; then
+            test -n "$LOCALFIT_ADMIN_TOKEN" || { echo "LOCALFIT_ADMIN_TOKEN is required for self-hosted telemetry"; exit 1; }
+          fi
+          cp published/recommend-model.json "$RUNNER_TEMP/localfit-incumbent.json"
+
       - name: Fetch HuggingFace candidate pool
         run: python scripts/fetch_hf_candidates.py
 
-      - name: Train model from telemetry
-        run: python scripts/train_model.py
+      - name: Train and quality-gate candidate model
+        env:
+          LOCALFIT_TELEMETRY_EXPORT_URL: ${{ secrets.LOCALFIT_TELEMETRY_EXPORT_URL }}
+          LOCALFIT_ADMIN_TOKEN: ${{ secrets.LOCALFIT_ADMIN_TOKEN }}
+        run: |
+          python scripts/train_model.py \
+            --telemetry-url "$LOCALFIT_TELEMETRY_EXPORT_URL" \
+            --quality-gate \
+            --minimum-real-configurations 100 \
+            --baseline "$RUNNER_TEMP/localfit-incumbent.json" \
+            --output "$RUNNER_TEMP/localfit-candidate.json" \
+            --quality-report "$RUNNER_TEMP/localfit-quality-report.json"
+          cp "$RUNNER_TEMP/localfit-candidate.json" published/recommend-model.json
 
       - name: Commit updated model artifact
         run: |

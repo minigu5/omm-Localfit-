@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from argparse import Namespace
 
 import pytest
 
 pytest.importorskip("sklearn")
 
 from scripts import train_model
+from scripts.model_quality_gate import validate_dataset
+
+
+def test_training_script_can_run_directly_from_outside_repository(tmp_path):
+    result = subprocess.run(
+        [sys.executable, str(train_model.__file__), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--quality-gate" in result.stdout
 
 
 class _Response:
@@ -101,6 +118,94 @@ def test_inconsistent_schema_four_sample_summary_is_rejected():
     assert audit["rejections"] == {"invalid_samples": 1}
 
 
+def test_v5_uses_direct_metadata_without_parsing_the_model_name():
+    row = _row(
+        20,
+        benchmark_version=5,
+        model_installed="unparseable-name.bin",
+        model_repo_id="org/unparseable",
+        model_size_bytes=None,
+        parameter_count_b=8.0,
+        active_parameter_count_b=2.0,
+        quant_bits=4.0,
+        engine_version="1.0",
+        client_version="1.0",
+        runtime_profile="throughput",
+        sample_count=3,
+        tokens_per_sec_min=19,
+        tokens_per_sec_max=21,
+    )
+
+    X, y = train_model.real_rows_to_training_data([row])
+
+    assert len(X) == 1
+    assert y == [20]
+
+
+def test_v5_rejects_missing_or_invalid_direct_metadata_without_name_fallback():
+    base = dict(
+        benchmark_version=5,
+        model_installed="model-7B-Q4.gguf",
+        parameter_count_b=7.0,
+        active_parameter_count_b=3.0,
+        quant_bits=4.0,
+        engine_version="1.0",
+        client_version="1.0",
+        runtime_profile="throughput",
+        sample_count=3,
+        tokens_per_sec_min=19,
+        tokens_per_sec_max=21,
+    )
+    missing_metadata = {**base, "parameter_count_b": None}
+    _, reason = train_model._real_row_to_sample(_row(20, **missing_metadata))
+    assert reason == "missing_model_metadata"
+    invalid_metadata = {**base, "parameter_count_b": "7"}
+    _, reason = train_model._real_row_to_sample(_row(20, **invalid_metadata))
+    assert reason == "invalid_model_metadata"
+    missing_runtime = {**base, "cpu_threads": None}
+    _, reason = train_model._real_row_to_sample(_row(20, **missing_runtime))
+    assert reason == "missing_runtime_metadata"
+
+
+def _v5_row(speed: float, **overrides) -> dict:
+    return _row(
+        speed,
+        benchmark_version=5,
+        parameter_count_b=7.0,
+        active_parameter_count_b=3.0,
+        quant_bits=4.0,
+        engine_version="1.0",
+        client_version="1.0",
+        runtime_profile="throughput",
+        sample_count=3,
+        tokens_per_sec_min=speed - 1,
+        tokens_per_sec_max=speed + 1,
+        **overrides,
+    )
+
+
+def test_quality_gate_rejects_legacy_only_configurations():
+    _X, _y, audit = train_model.real_rows_to_training_data_with_audit(
+        [_row(10), _row(20, vram_gb=6)]
+    )
+
+    assert audit["unique_configurations"] == 2
+    assert audit["direct_v5_unique_configurations"] == 0
+    with pytest.raises(ValueError, match="too few unique direct-v5"):
+        validate_dataset(audit, min_unique_configurations=1)
+
+
+def test_direct_v5_duplicate_configurations_are_collapsed_for_the_gate():
+    _X, _y, audit = train_model.real_rows_to_training_data_with_audit(
+        [_v5_row(10), _v5_row(20)]
+    )
+
+    assert audit["unique_configurations"] == 1
+    assert audit["direct_v5_unique_configurations"] == 1
+    with pytest.raises(ValueError, match="too few unique direct-v5"):
+        validate_dataset(audit, min_unique_configurations=2)
+
+
 def test_supported_engines_are_kept_as_distinct_training_configurations():
     rows = [
         _row(20, engine="ollama"),
@@ -141,6 +246,7 @@ def test_training_audit_explains_rejections_and_duplicate_collapse():
         "samples_used": 2,
         "samples_capped": 0,
         "unique_configurations": 1,
+        "direct_v5_unique_configurations": 0,
         "duplicates_collapsed": 1,
         "rejections": {
             "invalid_measurement": 1,
@@ -244,9 +350,189 @@ def test_fetch_real_rows_accepts_authenticated_self_hosted_export(monkeypatch):
     assert captured["headers"] == {"Authorization": "Bearer secret"}
 
 
+def test_fetch_real_rows_omits_authorization_for_firebase_with_token(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+
+    def fake_get(url, headers, timeout):
+        captured.update(url=url, headers=headers, timeout=timeout)
+        return _Response([_row(22)])
+
+    monkeypatch.setattr(train_model.requests, "get", fake_get)
+
+    train_model.fetch_real_rows("https://project.firebaseio.com/benchmarks.json")
+
+    assert "Authorization" not in captured["headers"]
+
+
+def test_fetch_real_rows_omits_authorization_when_token_is_unset(monkeypatch):
+    captured = {}
+    monkeypatch.delenv("LOCALFIT_ADMIN_TOKEN", raising=False)
+
+    def fake_get(url, headers, timeout):
+        captured.update(url=url, headers=headers, timeout=timeout)
+        return _Response([_row(22)])
+
+    monkeypatch.setattr(train_model.requests, "get", fake_get)
+
+    train_model.fetch_real_rows("https://project.firebaseio.com/benchmarks.json")
+
+    assert "Authorization" not in captured["headers"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://project.firebaseio.com/benchmarks.json",
+        "https://project-default-rtdb.firebasedatabase.app/benchmarks.json",
+    ],
+)
+def test_firebase_rtdb_json_urls_are_recognized(url):
+    assert train_model.is_firebase_realtime_database_json_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://firebaseio.com/benchmarks.json",
+        "https://project.firebaseio.com.evil.example/benchmarks.json",
+        "https://project.firebaseio.com/v1/benchmarks/export",
+    ],
+)
+def test_non_firebase_rtdb_json_urls_are_not_recognized(url):
+    assert not train_model.is_firebase_realtime_database_json_url(url)
+
+
 def test_load_telemetry_file_rejects_malformed_jsonl(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text(json.dumps(_row(10)) + "\nnot-json\n")
 
     with pytest.raises(ValueError, match=":2 is not valid JSON"):
         train_model.load_telemetry_file(path)
+
+
+def test_stable_holdout_split_is_independent_of_input_order():
+    def row(ram, parameters):
+        values = {name: 0.0 for name in train_model.FEATURE_ORDER}
+        values["ram_gb"] = ram
+        values["param_count_b"] = parameters
+        values["quant_bits"] = 4.0
+        values["model_size_gb"] = parameters * 0.5
+        values["active_param_count_b"] = parameters
+        return [values[name] for name in train_model.FEATURE_ORDER]
+    X = [row(16.0, 3.0), row(16.0, 7.0), row(32.0, 3.0), row(32.0, 7.0)]
+    y = [20.0, 10.0, 30.0, 40.0]
+
+    first = train_model.stable_holdout_split(X, y, 0.25)
+    second = train_model.stable_holdout_split(list(reversed(X)), list(reversed(y)), 0.25)
+
+    assert first == second
+
+
+def test_stable_holdout_split_keeps_sibling_candidates_atomic():
+    def row(ram, parameters):
+        values = {name: 0.0 for name in train_model.FEATURE_ORDER}
+        values["ram_gb"] = ram
+        values["param_count_b"] = parameters
+        values["quant_bits"] = 4.0
+        values["model_size_gb"] = parameters * 0.5
+        values["active_param_count_b"] = parameters
+        values["gpu_offload_ratio"] = parameters / 10
+        return [values[name] for name in train_model.FEATURE_ORDER]
+    X = [row(16.0, 3.0), row(16.0, 7.0), row(32.0, 3.0), row(32.0, 7.0)]
+    train_X, _train_y, holdout_X, _holdout_y = train_model.stable_holdout_split(X, [1.0] * 4, 0.25)
+    train_contexts = {train_model.selection_context_key(train_model.FEATURE_ORDER, x) for x in train_X}
+    holdout_contexts = {train_model.selection_context_key(train_model.FEATURE_ORDER, x) for x in holdout_X}
+
+    assert train_contexts.isdisjoint(holdout_contexts)
+    assert len(holdout_X) == 2
+
+
+def test_quality_gate_split_rejects_too_few_selection_contexts():
+    with pytest.raises(ValueError, match="at least two selection contexts"):
+        train_model.stable_holdout_split([[0.0] * len(train_model.FEATURE_ORDER)], [1.0], 0.2)
+
+
+def test_quality_gate_regression_does_not_overwrite_output(tmp_path, monkeypatch):
+    telemetry = tmp_path / "telemetry.json"
+    telemetry.write_text(json.dumps([_row(10), _row(20, vram_gb=6)]))
+    output = tmp_path / "model.json"
+    output.write_text("incumbent-output")
+    baseline = tmp_path / "baseline.json"
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    X, y = train_model.real_rows_to_training_data(json.loads(telemetry.read_text()))
+    baseline.write_text(
+        json.dumps(
+            train_model.train_artifact(
+                X, y, sample_weight=None, training_mode="telemetry", bootstrap_method=None,
+                real_rows=[], telemetry_audit={"unique_configurations": len(X)},
+                input_sources=[], evaluation=None,
+            )
+        )
+    )
+    monkeypatch.setattr(
+        train_model, "compare_artifacts", lambda *_args: {"passed": False, "failures": ["forced"]}
+    )
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[telemetry], offline=True, telemetry_url="", output=output,
+            baseline=baseline, quality_gate=True, minimum_real_configurations=0,
+            maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=None,
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="quality gate rejected"):
+        train_model.main()
+
+    assert output.read_text() == "incumbent-output"
+
+
+def test_quality_gate_fetch_failure_does_not_overwrite_output(tmp_path, monkeypatch):
+    output = tmp_path / "model.json"
+    output.write_text("incumbent-output")
+    monkeypatch.setattr(train_model, "fetch_real_rows", lambda _url: [])
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[],
+            offline=False,
+            telemetry_url="https://collector.example/export",
+            output=output,
+            baseline=tmp_path / "missing-baseline.json",
+            quality_gate=True,
+            minimum_real_configurations=100,
+            maximum_rejection_rate=0.25,
+            holdout_fraction=0.2,
+            quality_report=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="too few unique"):
+        train_model.main()
+
+    assert output.read_text() == "incumbent-output"
+
+
+def test_offline_training_exports_v4_with_64_trees(tmp_path, monkeypatch):
+    output = tmp_path / "model.json"
+    monkeypatch.setattr(train_model, "load_candidates", lambda: [])
+    monkeypatch.setattr(
+        train_model,
+        "parse_args",
+        lambda: Namespace(
+            telemetry_file=[], offline=True, telemetry_url="", output=output,
+            baseline=None, quality_gate=False, minimum_real_configurations=0,
+            maximum_rejection_rate=0.25, holdout_fraction=0.2, quality_report=None,
+        ),
+    )
+
+    train_model.main()
+
+    artifact = json.loads(output.read_text())
+    assert artifact["model_version"] == 4
+    assert artifact["feature_schema_version"] == 1
+    assert artifact["evaluation"] is None
+    assert len(artifact["trees"]) == 64

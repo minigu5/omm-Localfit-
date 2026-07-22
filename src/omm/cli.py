@@ -2,6 +2,7 @@
 
 import importlib.metadata
 import json
+import math
 import platform
 import shutil
 import subprocess
@@ -51,6 +52,13 @@ from omm.config import MODELS_DIR, OMM_HOME, load_config, save_config
 from omm.downloader import DownloadCancelled, DownloadError, download_file
 from omm.hardware import HardwareInfo, calculate_memory_budget, scan_hardware
 from omm.hashutil import sha256_file
+from omm.featurize import (
+    candidate_active_parameter_count_billions,
+    candidate_parameter_count_billions,
+    candidate_quant_bits,
+    parse_param_count_billions,
+    parse_quant_bits,
+)
 from omm.hub import (
     HF_DOWNLOAD,
     AmbiguousModelError,
@@ -751,7 +759,10 @@ def _resolve_ref(arg: str) -> str:
 
 
 def _predicted_fastest_filenames(
-    variants: list[QuantVariant], repo_id: str | None, hw: HardwareInfo
+    variants: list[QuantVariant],
+    repo_id: str | None,
+    hw: HardwareInfo,
+    parameter_count_b: float | None = None,
 ) -> set[str]:
     """Filenames that are the fastest-predicted variant in their quant-bits
     tier, per the cached ML speed model. Empty when no model is cached, so
@@ -765,7 +776,11 @@ def _predicted_fastest_filenames(
     for variant in variants:
         if variant.fits is not True:
             continue
-        candidate = {"repo_id": repo_id, "filename": variant.filename}
+        candidate = {
+            "repo_id": repo_id,
+            "filename": variant.filename,
+            "parameter_count_b": parameter_count_b,
+        }
         speed = predictor.predict_speed(trees, hw, candidate)
         if speed > 0:
             predicted_speed[variant.filename] = speed
@@ -805,7 +820,9 @@ def _pick_quant_variant(error: AmbiguousModelError) -> str | None:
         resolved_variants,
         key=lambda variant: (variant.fits is not True, -(variant.quant_bits or 0)),
     )
-    fastest_filenames = _predicted_fastest_filenames(variants, error.repo_id, info)
+    fastest_filenames = _predicted_fastest_filenames(
+        variants, error.repo_id, info, error.param_count_b
+    )
 
     choices = []
     for v in variants:
@@ -1026,12 +1043,33 @@ def _install_impl(
     sample_count = 1
     speed_min = speed_max = None
     quality_summary = None
+    runtime = None
+    model_metadata = None
+    engine_version = None
+    runtime_options = None
     if linked["ollama"]:
         console.print("Benchmarking...")
+        runtime_hw = scan_hardware()
+        runtime_candidate = {
+            "filename": filename, "repo_id": repo_id, "size_bytes": dest.stat().st_size,
+        }
+        try:
+            model_metadata = quality_mod._model_metadata(ollama_tag)
+            runtime_candidate.update(model_metadata)
+        except quality_mod.QualityEvaluationError:
+            model_metadata = None
+        runtime_options = tuning.recommend_runtime_settings(runtime_hw, runtime_candidate).ollama_options
         if use_quality_eval:
             try:
+                def _evaluate_with_runtime():
+                    try:
+                        return quality_mod.evaluate_model(
+                            ollama_tag, quality_pack, speed_runs=3, runtime_options=runtime_options
+                        )
+                    except TypeError:  # compatibility with older integrations
+                        return quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3)
                 result = _run_interruptible(
-                    lambda: quality_mod.evaluate_model(ollama_tag, quality_pack, speed_runs=3),
+                    _evaluate_with_runtime,
                     stop_event,
                 )
             except _Interrupted as e:
@@ -1052,13 +1090,28 @@ def _install_impl(
                     "total": result["quality"]["total"],
                     "accuracy": result["quality"]["accuracy"],
                 }
+                runtime = result.get("runtime")
+                model_metadata = result
+                engine_version = quality_mod.ollama_version()
         else:
             try:
-                tokens_per_sec = _run_interruptible(
-                    lambda: benchmark.benchmark_ollama(ollama_tag), stop_event
+                sampled = _run_interruptible(
+                    lambda: benchmark.benchmark_ollama_samples(
+                        ollama_tag, runs=3, options=runtime_options
+                    ), stop_event
                 )
+                if sampled is not None:
+                    tokens_per_sec = sampled["median_tokens_per_sec"]
+                    sample_count = sampled["count"]
+                    speed_min, speed_max = sampled["min_tokens_per_sec"], sampled["max_tokens_per_sec"]
+                    runtime = quality_mod.runtime_snapshot(
+                        ollama_tag, (model_metadata or {}).get("digest"), runtime_options
+                    )
+                    engine_version = quality_mod.ollama_version()
             except _Interrupted as e:
                 raise ContributionStopped(filename) from e
+            finally:
+                quality_mod.unload_model(ollama_tag)
 
         if tokens_per_sec:
             console.print(f"[cyan]{tokens_per_sec:.1f} tok/s[/cyan]")
@@ -1076,6 +1129,11 @@ def _install_impl(
                     speed_min=speed_min,
                     speed_max=speed_max,
                     quality=quality_summary,
+                    model_metadata=model_metadata,
+                    runtime=runtime,
+                    engine_version=engine_version,
+                    model_filename=filename,
+                    model_digest=sha256,
                 )
             else:
                 telemetry.log_attempt("declined_by_user", filename)
@@ -1929,6 +1987,11 @@ def benchmark_cmd(
                     "total": model["quality"]["total"],
                     "accuracy": model["quality"]["accuracy"],
                 },
+                model_metadata=model,
+                runtime=model.get("runtime"),
+                engine_version=report.get("environment", {}).get("engine_version"),
+                model_filename=(entry or {}).get("filename") or model["tag"],
+                model_digest=model.get("digest"),
             )
     if json_output:
         console.print_json(data=report)
@@ -1944,6 +2007,11 @@ def _report_telemetry(
     speed_min: float | None = None,
     speed_max: float | None = None,
     quality: dict | None = None,
+    model_metadata: dict | None = None,
+    runtime: dict | None = None,
+    engine_version: str | None = None,
+    model_filename: str | None = None,
+    model_digest: str | None = None,
 ) -> bool:
     if tokens_per_sec is None:
         # Ollama daemon wasn't reachable - not a real "it doesn't run" signal,
@@ -1981,10 +2049,101 @@ def _report_telemetry(
             quality_total=quality["total"],
             quality_accuracy=quality["accuracy"],
         )
+    metadata = model_metadata or {}
+
+    def _number(*keys: str) -> float | None:
+        for key in keys:
+            value = metadata.get(key)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value > 0
+            ):
+                return float(value)
+        return None
+
+    candidate = {
+        "name": filename,
+        "filename": model_filename or filename,
+        "repo_id": repo_id,
+        "size_bytes": size_bytes,
+    }
+    parameter_count = _number("parameter_count_b", "parameter_count_billions")
+    if parameter_count is None:
+        value = metadata.get("parameter_size")
+        parameter_count = parse_param_count_billions(value) if isinstance(value, str) else None
+    if parameter_count is None:
+        parameter_count = candidate_parameter_count_billions(candidate)
+    active_parameter_count = _number("active_parameter_count_b", "active_parameter_count_billions")
+    if active_parameter_count is None:
+        active_parameter_count = candidate_active_parameter_count_billions(candidate)
+    if active_parameter_count is None:
+        active_parameter_count = parameter_count
+    quant_bits = _number("quant_bits")
+    if quant_bits is None:
+        value = metadata.get("quantization_level")
+        quant_bits = parse_quant_bits(value) if isinstance(value, str) else None
+    if quant_bits is None:
+        quant_bits = candidate_quant_bits(candidate)
+    digest = _normalize_model_digest(model_digest or metadata.get("digest"))
+    safe_filename = _safe_model_filename(model_filename or filename)
+    complete_runtime = _complete_runtime(runtime)
+    client_version = _client_version()
+    if (
+        parameter_count is not None and active_parameter_count is not None and quant_bits is not None
+        and complete_runtime is not None and isinstance(engine_version, str) and engine_version
+        and client_version is not None and sample_count >= 3
+    ):
+        event.update(
+            parameter_count_b=parameter_count,
+            active_parameter_count_b=active_parameter_count,
+            quant_bits=quant_bits,
+            engine_version=engine_version,
+            client_version=client_version,
+            benchmark_version=5,
+            **complete_runtime,
+        )
+        if safe_filename is not None:
+            event["model_filename"] = safe_filename
+        if digest is not None:
+            event["model_digest"] = digest
     sent = telemetry.send_event(event, force=True)
     if not sent:
         console.print("[dim]Telemetry not sent (will retry next time you run omm).[/dim]")
     return sent
+
+
+def _normalize_model_digest(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.removeprefix("sha256:").lower()
+    import re
+    return value if re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+
+def _safe_model_filename(value: object) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 300:
+        return None
+    # Ollama registry tags are allowed, while local paths are reduced to a basename.
+    return Path(value.replace("\\", "/")).name
+
+
+def _complete_runtime(runtime: object) -> dict | None:
+    if not isinstance(runtime, dict) or runtime.get("runtime_profile") != "explicit_ollama_options":
+        return None
+    fields = ("context_length", "gpu_offload_percent", "cpu_threads", "num_batch")
+    if not all(isinstance(runtime.get(key), int) and not isinstance(runtime[key], bool) for key in fields):
+        return None
+    if runtime["context_length"] <= 0 or runtime["cpu_threads"] <= 0 or runtime["num_batch"] <= 0:
+        return None
+    if not 0 <= runtime["gpu_offload_percent"] <= 100:
+        return None
+    return {key: runtime[key] for key in fields} | {"runtime_profile": "explicit_ollama_options"}
+
+
+def _client_version() -> str | None:
+    return _omm_version()
 
 
 @dataclass

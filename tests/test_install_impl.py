@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -126,7 +127,7 @@ def test_benchmark_always_runs_but_upload_needs_confirm(isolated_omm_home, monke
 
     outcome = cli._install_impl(_resolved())
 
-    assert bench_calls == ["tinyllama"]
+    assert bench_calls == ["tinyllama"] * 3
     assert outcome.tokens_per_sec == 42.0
     assert sent == []
     assert outcome.telemetry_sent is False
@@ -137,7 +138,16 @@ def test_auto_calibrate_runs_silently_when_cached_model_available(isolated_omm_h
         cli.predictor, "load_cached_model", lambda: {"trees": [{"leaf": True, "value": 20.0}]}
     )
     hw_stub = SimpleNamespace(
-        ram_total_gb=16.0, vram_total_gb=None, unified_memory=False, gpu_tflops=None
+        os_name="Linux",
+        os_version="",
+        cpu="CPU",
+        ram_total_gb=16.0,
+        ram_available_gb=12.0,
+        vram_total_gb=None,
+        vram_free_gb=None,
+        unified_memory=False,
+        gpu_name=None,
+        gpu_tflops=None,
     )
     monkeypatch.setattr(cli, "scan_hardware", lambda: hw_stub)
     monkeypatch.setattr(
@@ -270,6 +280,94 @@ def test_report_telemetry_omits_quality_fields_by_default(isolated_omm_home, mon
 
     assert "quality_pack_id" not in sent[0]
     assert sent[0]["sample_count"] == 1
+
+
+def test_report_telemetry_emits_flat_privacy_safe_v5_fields(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "scan_hardware",
+        lambda: SimpleNamespace(
+            ram_total_gb=16.0,
+            vram_total_gb=8.0,
+            unified_memory=False,
+            gpu_tflops=20.0,
+            cpu="private CPU name",
+            gpu_name="private GPU name",
+        ),
+    )
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    cli._report_telemetry(
+        "model-7B-A3B-Q4.gguf",
+        "org/model",
+        42.5,
+        size_bytes=4 * 1024**3,
+        sample_count=3,
+        speed_min=40.0,
+        speed_max=45.0,
+        model_metadata={"parameter_size": "7B", "quantization_level": "Q4_K_M"},
+        runtime={
+            "runtime_profile": "explicit_ollama_options",
+            "context_length": 4096,
+            "gpu_offload_percent": 75,
+            "cpu_threads": 8,
+            "num_batch": 512,
+        },
+        engine_version="0.12.0",
+        model_filename="model-7B-A3B-Q4.gguf",
+        model_digest="sha256:" + "a" * 64,
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 5
+    assert event["parameter_count_b"] == 7
+    assert event["active_parameter_count_b"] == 3
+    assert event["quant_bits"] == 4
+    assert event["context_length"] == 4096
+    assert event["gpu_offload_percent"] == 75
+    assert event["model_digest"] == "a" * 64
+    assert "runtime" not in event
+    assert "private CPU name" not in json.dumps(event)
+    assert "private GPU name" not in json.dumps(event)
+
+
+def test_report_telemetry_falls_back_to_v4_when_runtime_is_unverified(
+    isolated_omm_home, monkeypatch
+):
+    monkeypatch.setattr(
+        cli,
+        "scan_hardware",
+        lambda: SimpleNamespace(
+            ram_total_gb=16.0,
+            vram_total_gb=None,
+            unified_memory=False,
+            gpu_tflops=None,
+        ),
+    )
+    sent = []
+    monkeypatch.setattr(
+        cli.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    cli._report_telemetry(
+        "model-7B-Q4.gguf",
+        "org/model",
+        10.0,
+        sample_count=3,
+        speed_min=9.0,
+        speed_max=11.0,
+        model_metadata={"parameter_size": "7B", "quantization_level": "Q4_K_M"},
+        runtime=None,
+        engine_version="0.12.0",
+    )
+
+    assert sent[0]["benchmark_version"] == 4
+    assert "parameter_count_b" not in sent[0]
 
 
 def test_use_quality_eval_reports_median_speed_and_quality_summary(isolated_omm_home, monkeypatch):

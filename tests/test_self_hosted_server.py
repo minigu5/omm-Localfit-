@@ -77,6 +77,30 @@ def _quality_fields():
     }
 
 
+def _v5_event():
+    event = _event()
+    event.update(
+        benchmark_version=5,
+        model_installed="opaque-model-name.gguf",
+        model_filename="opaque-model-name.gguf",
+        model_digest="A" * 64,
+        parameter_count_b=7.0,
+        active_parameter_count_b=3.0,
+        quant_bits=4.0,
+        engine_version="0.3.1",
+        client_version="1.2.3",
+        runtime_profile="throughput",
+        context_length=4096,
+        gpu_offload_percent=100,
+        cpu_threads=8,
+        num_batch=512,
+        sample_count=3,
+        tokens_per_sec_min=18.0,
+        tokens_per_sec_max=20.0,
+    )
+    return event
+
+
 def test_self_hosted_collector_accepts_optional_quality_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
     server_app.get_store.cache_clear()
@@ -110,4 +134,43 @@ def test_self_hosted_collector_rejects_correct_over_total(tmp_path, monkeypatch)
     event["quality_correct"] = 9
 
     assert client.post("/v1/benchmarks", json=event).status_code == 422
+    server_app.get_store.cache_clear()
+
+
+def test_v5_event_stores_normalized_metadata_and_exact_retries_deduplicate(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    monkeypatch.setenv("LOCALFIT_ADMIN_TOKEN", "secret")
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+    event = _v5_event()
+
+    first = client.post("/v1/benchmarks", json=event)
+    second = client.post("/v1/benchmarks", json=event)
+    exported = client.get("/v1/benchmarks/export", headers={"Authorization": "Bearer secret"})
+
+    assert first.status_code == second.status_code == 201
+    assert second.json() == {"id": first.json()["id"], "status": "duplicate"}
+    assert exported.json()["benchmarks"][0]["model_digest"] == "a" * 64
+    server_app.get_store.cache_clear()
+
+
+def test_v5_rejects_missing_or_invalid_requirements_and_quality_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALFIT_DB_PATH", str(tmp_path / "benchmarks.sqlite3"))
+    server_app.get_store.cache_clear()
+    client = TestClient(server_app.app)
+    for field, value in (
+        ("parameter_count_b", None),
+        ("cpu_threads", 0),
+        ("sample_count", 2),
+        ("engine_version", ""),
+        ("model_filename", "C:\\private\\model.gguf"),
+    ):
+        event = _v5_event()
+        event[field] = value
+        assert client.post("/v1/benchmarks", json=event).status_code == 422
+    event = _v5_event()
+    event.update(_quality_fields(), quality_accuracy=0.751)
+    assert client.post("/v1/benchmarks", json=event).status_code == 422
+    event["quality_accuracy"] = 0.75005
+    assert client.post("/v1/benchmarks", json=event).status_code == 201
     server_app.get_store.cache_clear()

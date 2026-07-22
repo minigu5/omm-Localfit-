@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from omm import quality
+from omm import benchmark, quality
 from omm.hardware import HardwareInfo
 
 
@@ -141,3 +141,59 @@ def test_write_evidence_replaces_atomically(tmp_path):
 
     assert json.loads(path.read_text()) == {"schema_version": 1}
     assert not path.with_suffix(".json.tmp").exists()
+
+
+def test_runtime_snapshot_prefers_digest_and_reports_actual_offload(monkeypatch):
+    digest = "a" * 64
+    monkeypatch.setattr(
+        quality,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "models": [
+                {
+                    "name": "model:latest",
+                    "digest": "b" * 64,
+                    "context_length": 2048,
+                    "size": 100,
+                    "size_vram": 0,
+                },
+                {
+                    "name": "other:latest",
+                    "digest": digest,
+                    "context_length": 4096,
+                    "size": 100,
+                    "size_vram": 75,
+                },
+            ]
+        },
+    )
+
+    snapshot = quality.runtime_snapshot(
+        "model:latest",
+        digest,
+        {"num_ctx": 4096, "num_thread": 8, "num_batch": 512},
+    )
+
+    assert snapshot == {
+        "context_length": 4096,
+        "gpu_offload_percent": 75,
+        "cpu_threads": 8,
+        "num_batch": 512,
+        "runtime_profile": "explicit_ollama_options",
+    }
+
+
+def test_multi_sample_benchmark_reuses_identical_options(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        benchmark,
+        "benchmark_ollama",
+        lambda tag, options=None: calls.append((tag, dict(options or {}))) or 10.0,
+    )
+
+    result = benchmark.benchmark_ollama_samples(
+        "model:latest", runs=3, options={"num_ctx": 4096, "num_thread": 8}
+    )
+
+    assert result["count"] == 3
+    assert calls == [("model:latest", {"num_ctx": 4096, "num_thread": 8})] * 3

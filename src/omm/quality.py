@@ -23,6 +23,7 @@ from pathlib import Path
 import requests
 
 from omm.hardware import HardwareInfo
+from omm import tuning
 
 OLLAMA_HOST = "http://localhost:11434"
 MAX_PACK_BYTES = 1_000_000
@@ -191,6 +192,60 @@ def _model_metadata(tag: str) -> dict:
     }
 
 
+def _normalized_digest(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.removeprefix("sha256:").lower()
+    return value if re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+
+def runtime_snapshot(tag: str, digest: str | None, options: dict) -> dict | None:
+    """Return measured Ollama residency values, never inferred GPU use."""
+    try:
+        models = _request_json("GET", "/api/ps", timeout=10).get("models")
+    except QualityEvaluationError:
+        return None
+    if not isinstance(models, list):
+        return None
+    expected_digest = _normalized_digest(digest)
+    if expected_digest is not None:
+        row = next(
+            (
+                item
+                for item in models
+                if isinstance(item, dict)
+                and _normalized_digest(item.get("digest")) == expected_digest
+            ),
+            None,
+        )
+    else:
+        row = next(
+            (
+                item
+                for item in models
+                if isinstance(item, dict) and item.get("name") == tag
+            ),
+            None,
+        )
+    if row is None:
+        return None
+    context, size, size_vram = row.get("context_length"), row.get("size"), row.get("size_vram")
+    if not all(isinstance(value, int) and not isinstance(value, bool) for value in (context, size, size_vram)):
+        return None
+    if context <= 0 or size <= 0 or size_vram < 0:
+        return None
+    threads, batch = options.get("num_thread"), options.get("num_batch")
+    if not all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in (threads, batch)):
+        return None
+    return {
+        "context_length": context,
+        "gpu_offload_percent": max(0, min(100, round(100 * size_vram / size))),
+        "cpu_threads": threads,
+        "num_batch": batch,
+        "runtime_profile": "explicit_ollama_options",
+    }
+
+
 def unload_model(tag: str) -> bool:
     """Best-effort isolation between models; never deletes model files."""
     try:
@@ -205,13 +260,15 @@ def unload_model(tag: str) -> bool:
     return True
 
 
-def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None = None) -> dict:
+def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None = None,
+              runtime_options: dict | None = None) -> dict:
     options = {
         "temperature": generation["temperature"],
         "seed": generation["seed"],
         "num_ctx": generation["num_ctx"],
         "num_predict": num_predict or generation["num_predict"],
     }
+    options.update(runtime_options or {})
     data = _request_json(
         "POST",
         "/api/generate",
@@ -226,6 +283,15 @@ def _generate(tag: str, prompt: str, generation: dict, num_predict: int | None =
     if not isinstance(data.get("response"), str):
         raise QualityEvaluationError(f"Ollama returned no text response for '{tag}'")
     return data
+
+
+def _generate_with_runtime(
+    tag: str, prompt: str, generation: dict, num_predict: int | None, runtime_options: dict | None
+) -> dict:
+    """Avoid changing the call shape used by older test/integration fakes."""
+    if runtime_options is None:
+        return _generate(tag, prompt, generation, num_predict=num_predict)
+    return _generate(tag, prompt, generation, num_predict=num_predict, runtime_options=runtime_options)
 
 
 def _tokens_per_second(response: dict) -> float | None:
@@ -243,27 +309,30 @@ def _tokens_per_second(response: dict) -> float | None:
     return None
 
 
-def _speed_probe(tag: str, generation: dict, runs: int) -> SpeedSummary:
+def _speed_probe(tag: str, generation: dict, runs: int, runtime_options: dict | None = None) -> SpeedSummary:
     _bounded_int(runs, 1, 10, "speed runs")
     prompt = "Explain what an operating system is in a concise paragraph."
-    _generate(tag, prompt, generation, num_predict=8)
+    _generate_with_runtime(tag, prompt, generation, 8, runtime_options)
     samples = []
     for _ in range(runs):
-        speed = _tokens_per_second(_generate(tag, prompt, generation, num_predict=64))
+        speed = _tokens_per_second(_generate_with_runtime(tag, prompt, generation, 64, runtime_options))
         if speed is None:
             raise QualityEvaluationError(f"Ollama returned no timing metrics for '{tag}'")
         samples.append(speed)
     return SpeedSummary(statistics.median(samples), tuple(samples))
 
 
-def evaluate_model(tag: str, pack: dict, speed_runs: int = 3) -> dict:
-    metadata = _model_metadata(tag)
+def evaluate_model(tag: str, pack: dict, speed_runs: int = 3, runtime_options: dict | None = None,
+                   model_metadata: dict | None = None) -> dict:
+    metadata = model_metadata or _model_metadata(tag)
     template = pack["prompt_template"]
     generation = pack["generation"]
     item_results = []
     quality_speeds = []
     for item in pack["items"]:
-        response = _generate(tag, template.format(question=item["question"]), generation)
+        response = _generate_with_runtime(
+            tag, template.format(question=item["question"]), generation, None, runtime_options
+        )
         predicted = parse_numeric_answer(response["response"])
         expected = _normalize_number(item["expected"])
         correct = predicted is not None and predicted == expected
@@ -284,7 +353,7 @@ def evaluate_model(tag: str, pack: dict, speed_runs: int = 3) -> dict:
     correct_count = sum(1 for item in item_results if item["correct"])
     category_total = Counter(item["category"] for item in item_results)
     category_correct = Counter(item["category"] for item in item_results if item["correct"])
-    speed = _speed_probe(tag, generation, speed_runs)
+    speed = _speed_probe(tag, generation, speed_runs, runtime_options=runtime_options)
     return {
         **metadata,
         "quality": {
@@ -311,6 +380,7 @@ def evaluate_model(tag: str, pack: dict, speed_runs: int = 3) -> dict:
                 round(statistics.median(quality_speeds), 2) if quality_speeds else None
             ),
         },
+        "runtime": runtime_snapshot(tag, metadata.get("digest"), runtime_options or {}),
     }
 
 
@@ -330,6 +400,17 @@ def collect_evidence(
     models = []
     for tag in tags:
         try:
+            metadata = _model_metadata(tag)
+            profile = tuning.recommend_runtime_settings(hardware, metadata)
+            options = profile.ollama_options
+            try:
+                result = evaluate_model(tag, pack, speed_runs=speed_runs,
+                                        runtime_options=options, model_metadata=metadata)
+            except TypeError:  # third-party/legacy monkeypatch compatibility
+                result = evaluate_model(tag, pack, speed_runs=speed_runs)
+        except QualityEvaluationError:
+            # Preserve the public evaluator hook for callers which provide
+            # their own metadata/evaluator; it simply cannot emit v5 runtime.
             result = evaluate_model(tag, pack, speed_runs=speed_runs)
         finally:
             unloaded = unload_model(tag)
@@ -337,6 +418,7 @@ def collect_evidence(
             "unloaded_after_run": unloaded,
             "model_files_deleted": False,
         }
+        result.setdefault("runtime", None)
         models.append(result)
     return {
         "schema_version": 1,

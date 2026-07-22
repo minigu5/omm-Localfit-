@@ -124,6 +124,32 @@ def test_quant_picker_marks_predicted_fastest_variant_green(isolated_omm_home, m
     assert "predicted fastest" not in slow_title
 
 
+def test_quant_picker_passes_repo_parameter_count_to_predictor(isolated_omm_home, monkeypatch):
+    repo_id = "org/unparseable"
+    candidates = ["artifact.Q4.gguf"]
+    received_candidates = []
+
+    monkeypatch.setattr(cli, "resolve_model", lambda name: (_ for _ in ()).throw(
+        AmbiguousModelError(repo_id, candidates, param_count_b=3.0)
+    ))
+    monkeypatch.setattr(cli, "scan_hardware", lambda: _HARDWARE)
+    monkeypatch.setattr(cli.predictor, "load_cached_model", lambda: {"trees": ["stub-tree"]})
+    monkeypatch.setattr(
+        cli.predictor,
+        "predict_speed",
+        lambda trees, hw, candidate: received_candidates.append(candidate) or 1.0,
+    )
+    monkeypatch.setattr(cli.questionary, "select", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ask_select", lambda question: None)
+
+    result = runner.invoke(cli.app, ["install", repo_id])
+
+    assert result.exit_code == 0
+    assert received_candidates == [
+        {"repo_id": repo_id, "filename": "artifact.Q4.gguf", "parameter_count_b": 3.0}
+    ]
+
+
 def test_quant_picker_no_green_marks_when_predictor_model_uncached(isolated_omm_home, monkeypatch):
     repo_id = "TheBloke/Llama-2-7B-GGUF"
     candidates = ["llama-2-7b.Q4_K_M.gguf"]

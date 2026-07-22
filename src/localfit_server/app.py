@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +25,13 @@ class BenchmarkEvent(BaseModel):
     model_installed: str = Field(min_length=1, max_length=300)
     model_repo_id: str | None = Field(default=None, max_length=300)
     model_size_bytes: int | None = Field(default=None, gt=0, le=10**15)
+    model_filename: str | None = Field(default=None, max_length=300)
+    model_digest: str | None = Field(default=None, max_length=64)
+    parameter_count_b: float | None = Field(default=None, gt=0, le=10_000)
+    active_parameter_count_b: float | None = Field(default=None, gt=0, le=10_000)
+    quant_bits: float | None = Field(default=None, ge=0.5, le=32)
+    engine_version: str | None = Field(default=None, min_length=1, max_length=100)
+    client_version: str | None = Field(default=None, min_length=1, max_length=100)
     engine: Literal["llama.cpp", "lmstudio", "ollama", "jan", "gpt4all"]
     benchmark_version: int = Field(ge=1, le=1000)
     recorded_at: datetime
@@ -42,7 +50,7 @@ class BenchmarkEvent(BaseModel):
     quality_total: int | None = Field(default=None, ge=1, le=100)
     quality_accuracy: float | None = Field(default=None, ge=0, le=1)
 
-    @field_validator("model_installed", "model_repo_id")
+    @field_validator("model_installed", "model_repo_id", "model_filename")
     @classmethod
     def reject_paths_and_controls(cls, value: str | None) -> str | None:
         if value is None:
@@ -52,6 +60,16 @@ class BenchmarkEvent(BaseModel):
         if value.startswith("/") or ":/" in value:
             raise ValueError("local paths are not allowed")
         return value
+
+    @field_validator("model_digest")
+    @classmethod
+    def normalize_model_digest(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise ValueError("model_digest must be a SHA-256 hex digest")
+        return normalized
 
     @model_validator(mode="after")
     def validate_sample_summary(self) -> "BenchmarkEvent":
@@ -80,6 +98,53 @@ class BenchmarkEvent(BaseModel):
         if self.quality_correct is not None and self.quality_total is not None:
             if self.quality_correct > self.quality_total:
                 raise ValueError("quality_correct cannot exceed quality_total")
+            if self.quality_accuracy is not None and abs(
+                self.quality_accuracy - self.quality_correct / self.quality_total
+            ) > 1e-4:
+                raise ValueError("quality_accuracy must equal quality_correct / quality_total")
+        return self
+
+    @model_validator(mode="after")
+    def validate_v5_requirements(self) -> "BenchmarkEvent":
+        if self.benchmark_version != 5:
+            return self
+        required_model_metadata = (
+            self.parameter_count_b,
+            self.active_parameter_count_b,
+            self.quant_bits,
+            self.engine_version,
+            self.client_version,
+        )
+        if any(value is None for value in required_model_metadata):
+            raise ValueError("v5 requires model metadata and component versions")
+        if self.active_parameter_count_b > self.parameter_count_b:
+            raise ValueError("active_parameter_count_b cannot exceed parameter_count_b")
+        required_runtime = (
+            self.runtime_profile,
+            self.context_length,
+            self.gpu_offload_percent,
+            self.cpu_threads,
+            self.num_batch,
+        )
+        if any(value is None for value in required_runtime):
+            raise ValueError("v5 requires runtime metadata")
+        if not self.runtime_profile.strip():
+            raise ValueError("v5 runtime_profile must be non-empty")
+        if not 256 <= self.context_length <= 131_072:
+            raise ValueError("v5 context_length must be between 256 and 131072")
+        if not 1 <= self.cpu_threads <= 1024:
+            raise ValueError("v5 cpu_threads must be between 1 and 1024")
+        if not 1 <= self.num_batch <= 65_536:
+            raise ValueError("v5 num_batch must be between 1 and 65536")
+        required_samples = (
+            self.sample_count,
+            self.tokens_per_sec_min,
+            self.tokens_per_sec_max,
+        )
+        if any(value is None for value in required_samples):
+            raise ValueError("v5 requires sample summary")
+        if self.sample_count < 3:
+            raise ValueError("v5 sample_count must be at least 3")
         return self
 
 

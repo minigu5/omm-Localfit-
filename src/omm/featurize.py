@@ -5,6 +5,7 @@ models at `omm recommend` time, so both sides encode features identically.
 
 from __future__ import annotations
 
+import math
 import re
 
 # Order matters: this is the exact input vector the trained tree expects.
@@ -86,7 +87,10 @@ def parse_param_count_billions(text: str) -> float | None:
 
 
 def candidate_parameter_count_billions(candidate: dict) -> float | None:
-    """Prefer filename metadata, then the repository name, then display name."""
+    """Prefer verified candidate metadata, then filename-derived values."""
+    explicit = _positive_finite_number(candidate.get("parameter_count_b"))
+    if explicit is not None:
+        return explicit
     sources = [str(candidate.get("filename") or "")]
     repo_id = str(candidate.get("repo_id") or "")
     if repo_id:
@@ -112,6 +116,9 @@ def parse_active_param_count_billions(text: str) -> float | None:
 
 
 def candidate_active_parameter_count_billions(candidate: dict) -> float | None:
+    explicit = _positive_finite_number(candidate.get("active_parameter_count_b"))
+    if explicit is not None:
+        return explicit
     sources = [str(candidate.get("filename") or "")]
     repo_id = str(candidate.get("repo_id") or "")
     if repo_id:
@@ -150,6 +157,9 @@ def parse_quant_bits(text: str) -> float | None:
 
 def candidate_quant_bits(candidate: dict) -> float | None:
     """Read an explicit quantization or infer effective stored bits from size."""
+    explicit = _positive_finite_number(candidate.get("quant_bits"))
+    if explicit is not None:
+        return explicit
     sources = [str(candidate.get("filename") or "")]
     repo_id = str(candidate.get("repo_id") or "")
     if repo_id:
@@ -162,11 +172,19 @@ def candidate_quant_bits(candidate: dict) -> float | None:
 
     parameters = candidate_parameter_count_billions(candidate)
     size_bytes = candidate.get("size_bytes")
-    if parameters and isinstance(size_bytes, (int, float)) and size_bytes > 0:
-        effective_bits = float(size_bytes) * 8 / (parameters * 1_000_000_000)
+    if parameters and (size_value := _positive_finite_number(size_bytes)) is not None:
+        effective_bits = size_value * 8 / (parameters * 1_000_000_000)
         if 0.5 <= effective_bits <= 32:
             return round(effective_bits, 2)
     return None
+
+
+def _positive_finite_number(value: object) -> float | None:
+    """Return a usable numeric metadata value, excluding bool and non-finite values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) and numeric > 0 else None
 
 
 def parse_chip_score(text: str) -> tuple[float, float]:

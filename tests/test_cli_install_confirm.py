@@ -52,7 +52,7 @@ def test_install_runs_benchmark_but_skips_upload_on_no(isolated_omm_home, monkey
     result = runner.invoke(cli.app, ["install", "tinyllama-1.1b-q4"])
 
     assert result.exit_code == 0, result.stdout
-    assert bench_calls == ["tinyllama"]
+    assert bench_calls == ["tinyllama"] * 3
     assert sent == []
 
 

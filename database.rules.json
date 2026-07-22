@@ -5,7 +5,7 @@
       ".indexOn": ["recorded_at"],
       "$event": {
         ".write": "!data.exists()",
-        ".validate": "newData.hasChildren(['ram_gb', 'unified_memory', 'model_installed', 'engine', 'benchmark_version', 'recorded_at', 'tokens_per_sec']) && newData.child('engine').val() == 'ollama' && newData.child('benchmark_version').val() >= 1 && newData.child('benchmark_version').val() <= 4",
+        ".validate": "newData.hasChildren(['ram_gb', 'unified_memory', 'model_installed', 'engine', 'benchmark_version', 'recorded_at', 'tokens_per_sec']) && newData.child('engine').val() == 'ollama' && newData.child('benchmark_version').val() >= 1 && newData.child('benchmark_version').val() <= 5 && (newData.child('benchmark_version').val() != 5 || (newData.hasChildren(['parameter_count_b', 'active_parameter_count_b', 'quant_bits', 'engine_version', 'client_version', 'runtime_profile', 'context_length', 'gpu_offload_percent', 'cpu_threads', 'num_batch', 'sample_count', 'tokens_per_sec_min', 'tokens_per_sec_max']) && newData.child('active_parameter_count_b').val() <= newData.child('parameter_count_b').val() && newData.child('runtime_profile').val().length > 0 && newData.child('context_length').val() >= 256 && newData.child('context_length').val() <= 131072 && newData.child('cpu_threads').val() >= 1 && newData.child('cpu_threads').val() <= 1024 && newData.child('num_batch').val() >= 1 && newData.child('num_batch').val() <= 65536 && newData.child('sample_count').val() >= 3 && newData.child('tokens_per_sec_min').val() <= newData.child('tokens_per_sec').val() && newData.child('tokens_per_sec').val() <= newData.child('tokens_per_sec_max').val())) && ((!newData.child('quality_pack_id').exists() && !newData.child('quality_pack_version').exists() && !newData.child('quality_correct').exists() && !newData.child('quality_total').exists() && !newData.child('quality_accuracy').exists()) || (newData.hasChildren(['quality_pack_id', 'quality_pack_version', 'quality_correct', 'quality_total', 'quality_accuracy']) && newData.child('quality_correct').val() <= newData.child('quality_total').val() && newData.child('quality_accuracy').val() >= newData.child('quality_correct').val() / newData.child('quality_total').val() - 0.0001 && newData.child('quality_accuracy').val() <= newData.child('quality_correct').val() / newData.child('quality_total').val() + 0.0001))",
         "ram_gb": {
           ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1024"
         },
@@ -27,11 +27,32 @@
         "model_size_bytes": {
           ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= 1099511627776)"
         },
+        "model_filename": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 300 && !newData.val().contains('/') && !newData.val().contains('\\\\') && !newData.val().contains(':/'))"
+        },
+        "model_digest": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().matches(/^[0-9a-f]{64}$/))"
+        },
+        "parameter_count_b": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= 10000)"
+        },
+        "active_parameter_count_b": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0 && newData.val() <= 10000)"
+        },
+        "quant_bits": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0.5 && newData.val() <= 32)"
+        },
+        "engine_version": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 100)"
+        },
+        "client_version": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 100)"
+        },
         "engine": {
           ".validate": "newData.val() == 'ollama'"
         },
         "benchmark_version": {
-          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 4"
+          ".validate": "newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 1 && newData.val() <= 5"
         },
         "recorded_at": {
           ".validate": "newData.isString() && newData.val().length >= 20 && newData.val().length <= 50"
@@ -40,7 +61,7 @@
           ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
         },
         "sample_count": {
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 1 && newData.val() <= 10)"
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 1 && newData.val() <= 10)"
         },
         "tokens_per_sec_min": {
           ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000)"
@@ -52,16 +73,31 @@
           ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 32)"
         },
         "context_length": {
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 256 && newData.val() <= 131072)"
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 256 && newData.val() <= 131072)"
         },
         "gpu_offload_percent": {
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 100)"
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 0 && newData.val() <= 100)"
         },
         "cpu_threads": {
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1024)"
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 0 && newData.val() <= 1024)"
         },
         "num_batch": {
-          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 65536)"
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 0 && newData.val() <= 65536)"
+        },
+        "quality_pack_id": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 100)"
+        },
+        "quality_pack_version": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().length > 0 && newData.val().length <= 20)"
+        },
+        "quality_correct": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 0 && newData.val() <= 100)"
+        },
+        "quality_total": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() % 1 == 0 && newData.val() >= 1 && newData.val() <= 100)"
+        },
+        "quality_accuracy": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 1)"
         },
         "os": {
           ".validate": "newData.parent().child('benchmark_version').val() < 3 && newData.isString() && newData.val().length <= 128"

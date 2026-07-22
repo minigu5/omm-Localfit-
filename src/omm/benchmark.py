@@ -5,6 +5,8 @@ with built-in per-token timing) - LM Studio benchmarking can be added later.
 
 from __future__ import annotations
 
+import statistics
+
 import requests
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -20,7 +22,7 @@ def ollama_daemon_reachable() -> bool:
         return False
 
 
-def benchmark_ollama(tag: str) -> float | None:
+def benchmark_ollama(tag: str, options: dict | None = None) -> float | None:
     """Return tokens/sec, 0.0 if generation was attempted and failed, or
     None if the daemon wasn't reachable at all (untestable, not a failure).
     """
@@ -34,7 +36,7 @@ def benchmark_ollama(tag: str) -> float | None:
                 "model": tag,
                 "prompt": _BENCHMARK_PROMPT,
                 "stream": False,
-                "options": {"num_predict": _NUM_PREDICT},
+                "options": {"num_predict": _NUM_PREDICT, **(options or {})},
             },
             timeout=120,
         )
@@ -46,3 +48,33 @@ def benchmark_ollama(tag: str) -> float | None:
         return eval_count / (eval_duration / 1e9)
     except (requests.RequestException, ValueError):
         return 0.0
+
+
+def benchmark_ollama_samples(
+    tag: str, runs: int = 3, options: dict | None = None
+) -> dict | None:
+    """Run a reproducible set of speed probes with identical options.
+
+    ``benchmark_ollama`` remains the one-shot public API for callers which
+    only need a float.  A ``None`` result still means the daemon was not
+    reachable; failed individual generations are retained as zero samples.
+    """
+    if not isinstance(runs, int) or isinstance(runs, bool) or not 1 <= runs <= 10:
+        raise ValueError("runs must be an integer from 1 to 10")
+    samples: list[float] = []
+    for _ in range(runs):
+        try:
+            value = benchmark_ollama(tag, options=options)
+        except TypeError:  # compatibility with old monkeypatched callables
+            value = benchmark_ollama(tag)
+        if value is None:
+            return None
+        samples.append(float(value))
+    return {
+        "median_tokens_per_sec": statistics.median(samples),
+        "min_tokens_per_sec": min(samples),
+        "max_tokens_per_sec": max(samples),
+        "count": len(samples),
+        "samples_tokens_per_sec": samples,
+        "options": dict(options or {}),
+    }

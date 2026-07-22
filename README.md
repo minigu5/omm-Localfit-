@@ -49,8 +49,9 @@ command adapts after memory-heavy applications are opened or closed.
 `omm benchmark` runs a versioned eight-item bilingual arithmetic smoke pack
 against models already installed in Ollama. It stores parsed answers,
 correctness, pinned model metadata, and fixed-length timings under
-`~/.omm/evaluations/`; it stores no generated text or raw hardware names and
-never uploads. The pack is intentionally small and is not a leaderboard.
+`~/.omm/evaluations/`; it stores no generated text or raw hardware names.
+Results are uploaded only after explicit opt-in. The pack is intentionally
+small and is not a leaderboard.
 
 ## Self-hosted benchmark data
 
@@ -78,8 +79,41 @@ python scripts/train_model.py \
   --telemetry-url http://127.0.0.1:8000/v1/benchmarks/export
 ```
 
-The old Firebase JSON endpoint remains supported only when explicitly configured.
-Exact duplicate events are ignored, and raw export requires the admin token.
+The old Firebase Realtime Database JSON endpoint remains supported only when
+explicitly configured. Its official `*.firebaseio.com` or
+`*.firebasedatabase.app` `.json` URL can be read without an admin token;
+self-hosted raw export requires `LOCALFIT_ADMIN_TOKEN`. Exact duplicate events
+are ignored.
+
+Automated retraining is fail-closed. Configure
+`LOCALFIT_TELEMETRY_EXPORT_URL`; configure `LOCALFIT_ADMIN_TOKEN` as well for a
+self-hosted export (it is optional for an official Firebase JSON URL). The
+scheduled job otherwise stops without changing the published artifact. It
+requires at least 100 distinct valid v5 configurations with explicit runtime
+metadata (legacy rows do not satisfy this minimum), rejects datasets with more
+than 25% invalid rows, and reserves a deterministic 20% holdout. A 64-tree v4
+candidate replaces the incumbent only when both holdout RMSLE and P90 absolute
+percentage error stay within the configured regression limits. Selection is
+evaluated on whole hardware/request contexts, so sibling model variants never
+leak across training and holdout sets. Publishing also requires at least three
+multi-model selection groups plus complete top-1, regret, balanced-fit, and
+false-positive evidence. Missing evidence fails the gate. The artifact records
+the complete candidate/baseline evaluation report.
+
+The same gate can validate an exported local dataset without contacting the
+collector:
+
+```sh
+python scripts/train_model.py --offline \
+  --telemetry-file benchmarks.jsonl \
+  --quality-gate --minimum-real-configurations 100 \
+  --baseline published/recommend-model.json \
+  --output candidate.json --quality-report quality-report.json
+```
+
+Synthetic bootstrap training remains available for local development, but the
+scheduled publishing workflow never uses it as a substitute for missing real
+benchmark data.
 
 ## Signed recommendation data
 
