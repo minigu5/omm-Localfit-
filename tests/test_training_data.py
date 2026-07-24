@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -801,3 +802,52 @@ def test_v7_outcome_contract_across_both_datasets():
     assert fit_audit["positive_examples"] == 1
     assert fit_audit["negative_examples"] == 1
     assert fit_audit["rejections"] == {"transient_error_excluded": 1}
+
+
+def test_report_telemetry_v7_success_event_feeds_speed_regression_and_positive_fit_label(monkeypatch):
+    """End-to-end contract check between omm.cli and scripts.train_model:
+    the exact event `_report_telemetry` sends for a successful benchmark
+    must be consumable by both training datasets. This is exactly the kind
+    of client/schema mismatch that once let v7 success events silently
+    stay on v6 with no test catching it."""
+    from omm import cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "scan_hardware",
+        lambda: SimpleNamespace(
+            ram_total_gb=16.0, vram_total_gb=8.0, unified_memory=False, gpu_tflops=20.0,
+            cpu="Test CPU", cpu_arch="x86_64", cpu_physical_cores=4, cpu_logical_cores=8,
+            gpu_name="Test GPU",
+        ),
+    )
+    sent = []
+    monkeypatch.setattr(
+        cli_mod.telemetry, "send_event", lambda event, force=False: sent.append(event) or True
+    )
+
+    cli_mod._report_telemetry(
+        "model-7B-Q4.gguf", "org/model", 42.5,
+        size_bytes=4 * 1024**3, sample_count=3, speed_min=40.0, speed_max=45.0,
+        model_metadata={"parameter_size": "7B", "quantization_level": "Q4_K_M"},
+        runtime={
+            "runtime_profile": "explicit_ollama_options", "context_length": 4096,
+            "gpu_offload_percent": 100, "cpu_threads": 8, "num_batch": 512,
+        },
+        engine_version="0.32.1", model_filename="model-7B-Q4.gguf", model_digest="sha256:" + "a" * 64,
+    )
+
+    event = sent[0]
+    assert event["benchmark_version"] == 7
+    assert event["outcome"] == "success"
+    assert "failure_reason" not in event
+
+    speed_X, speed_y, speed_audit = train_model.real_rows_to_training_data_with_audit([event])
+    assert speed_y == [42.5]
+    assert speed_audit["direct_v7_unique_configurations"] == 1
+    assert speed_audit["rejections"] == {}
+
+    fit_X, fit_y, fit_audit = train_model.real_rows_to_fit_training_data_with_audit([event])
+    assert fit_y == [True]
+    assert fit_audit["positive_examples"] == 1
+    assert fit_audit["negative_examples"] == 0

@@ -2433,13 +2433,20 @@ def _report_telemetry(
         and isinstance(engine_version, str) and engine_version
         and client_version is not None and sample_count >= 3
     ):
+        # v7: same direct-metadata contract as the old v6 promotion, plus an
+        # explicit outcome so this measurement is unambiguously distinct
+        # from a v7 model_unfit/transient_error failure event (never sent
+        # from this function - see _report_failure_telemetry). Do not send
+        # v6 from new code: v6 stays a read-only, backward-compatible
+        # schema for historical data already in Firebase.
         event.update(
             parameter_count_b=parameter_count,
             active_parameter_count_b=active_parameter_count,
             quant_bits=quant_bits,
             engine_version=engine_version,
             client_version=client_version,
-            benchmark_version=6,
+            benchmark_version=7,
+            outcome="success",
             **complete_runtime,
             **complete_cpu,
         )
@@ -2568,7 +2575,7 @@ def _safe_model_filename(value: object) -> str | None:
 
 
 def _complete_cpu_metadata(info: HardwareInfo) -> dict[str, str | int] | None:
-    """Return schema-v6 CPU data only when it is useful for training."""
+    """Return direct-metadata (v6/v7) CPU data only when it is useful for training."""
     model = getattr(info, "cpu", None)
     arch = getattr(info, "cpu_arch", None)
     physical = getattr(info, "cpu_physical_cores", None)

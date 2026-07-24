@@ -303,7 +303,7 @@ def test_report_telemetry_omits_quality_fields_by_default(isolated_omm_home, mon
     assert sent[0]["sample_count"] == 1
 
 
-def test_report_telemetry_emits_schema_v6_cpu_fields(
+def test_report_telemetry_emits_v7_success_with_cpu_fields(
     isolated_omm_home, monkeypatch
 ):
     monkeypatch.setattr(
@@ -348,7 +348,9 @@ def test_report_telemetry_emits_schema_v6_cpu_fields(
     )
 
     event = sent[0]
-    assert event["benchmark_version"] == 6
+    assert event["benchmark_version"] == 7
+    assert event["outcome"] == "success"
+    assert "failure_reason" not in event
     assert event["parameter_count_b"] == 7
     assert event["active_parameter_count_b"] == 3
     assert event["quant_bits"] == 4
